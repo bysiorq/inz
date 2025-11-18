@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+Główna aplikacja Alkotester oraz uruchomienie wątku serwera administracyjnego.
+
+Ten moduł odpowiada za obsługę cyklu życia urządzenia: inicjalizację
+interfejsu graficznego, przechwytywanie obrazu z kamery, detekcję
+twarzy, zbieranie próbek wdychania alkoholu, podejmowanie decyzji
+o udzieleniu dostępu oraz rejestrowanie zdarzeń.  Dodatkowo w wątku
+ pobocznym uruchamiany jest prosty serwer HTTP, który umożliwia
+ administratorowi przeglądanie logów i dodawanie nowych pracowników.
+"""
+
 import os
 import sys
 import cv2
@@ -20,10 +31,24 @@ from facedb import FaceDB
 from camera_manager import CameraManager
 from keypad import KeypadDialog
 
+# Import admin_server to start the web interface in a separate thread
+import admin_server
+
+# Import Mongo client for logging to the database
+try:
+    from pymongo import MongoClient  # type: ignore
+except Exception:
+    MongoClient = None  # if PyMongo is unavailable we fall back to CSV only
+
 
 def _face_quality(szare_roi):
     """
-    Zwraca (ok, ostrość, jasność).
+    Oceń jakość próbki twarzy.
+
+    Zwraca krotkę (ok, ostrość, jasność) gdzie:
+    - ok: True jeśli próbka spełnia minimalne wymagania,
+    - ostrość: wariancja operatora Laplace'a,
+    - jasność: średnia wartość pikseli.
     """
     ostrosc = cv2.Laplacian(szare_roi, cv2.CV_64F).var()
     jasnosc = float(np.mean(szare_roi))
@@ -35,14 +60,18 @@ def _face_quality(szare_roi):
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    """Główne okno aplikacji oraz implementacja FSM."""
+
     def __init__(self):
         super().__init__()
         ensure_dirs()
 
+        # Konfiguracja GPIO
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
         GPIO.setup(CONFIG["gate_gpio"], GPIO.OUT, initial=GPIO.LOW)
 
+        # Czujnik MQ-3
         self.adc = MCP3008(CONFIG["spi_bus"], CONFIG["spi_device"])
         self.mq3 = MQ3Sensor(
             self.adc,
@@ -51,6 +80,7 @@ class MainWindow(QtWidgets.QMainWindow):
             CONFIG["promille_scale"],
         )
 
+        # Baza twarzy
         self.facedb = FaceDB(
             CONFIG["faces_dir"],
             CONFIG["index_dir"],
@@ -64,12 +94,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if CONFIG["hide_cursor"]:
             self.setCursor(QtCore.Qt.BlankCursor)
 
+        # Tworzenie interfejsu
         centralny = QtWidgets.QWidget()
         self.setCentralWidget(centralny)
         uklad_zew = QtWidgets.QVBoxLayout(centralny)
         uklad_zew.setContentsMargins(0, 0, 0, 0)
         uklad_zew.setSpacing(0)
 
+        # Podgląd kamery
         self.view = QtWidgets.QLabel()
         self.view.setAlignment(QtCore.Qt.AlignCenter)
         self.view.setStyleSheet("background:black;")
@@ -79,6 +111,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         uklad_zew.addWidget(self.view, 1)
 
+        # Pasek dolny
         self.overlay = QtWidgets.QFrame()
         self.overlay.setFixedHeight(CONFIG["overlay_height_px"])
         self.overlay.setStyleSheet("background: rgba(0,0,0,110); color:white;")
@@ -114,13 +147,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
         uklad_zew.addWidget(self.overlay, 0)
 
+        # Stan maszyny stanowej
         self.state = "INIT"
 
+        # Dane aktualnego pracownika
         self.current_emp_id = None
         self.current_emp_name = None
 
+        # Flaga dopuszczenia po PIN
         self.fallback_pin_flag = False
 
+        # Ostatnio rozpoznana twarz
         self.last_face_bbox = None
         self.last_confidence = 0.0
         self.last_promille = 0.0
@@ -144,12 +181,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.post_training_action = None
 
+        # Inicjalizacja kamery
         self.cam = CameraManager(
             CONFIG["camera_main_size"][0],
             CONFIG["camera_main_size"][1],
             CONFIG["rotate_dir"],
         )
 
+        # Timery
         self.cam_timer = QtCore.QTimer(self)
         self.cam_timer.timeout.connect(self.on_camera_tick)
         self.cam_timer.start(int(1000 / max(1, CONFIG["camera_fps"])))
@@ -169,9 +208,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.measure_timer = QtCore.QTimer(self)
         self.measure_timer.timeout.connect(self.on_measure_tick)
 
+        # Obsługa przycisków
         self.btn_primary.clicked.connect(self.on_btn_primary)
         self.btn_secondary.clicked.connect(self.on_btn_secondary)
 
+        # Komunikat startowy – kalibracja MQ-3
         self.set_message(
             "Proszę czekać…",
             "Kalibracja czujnika MQ-3 w toku",
@@ -179,9 +220,11 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.show_buttons(primary_text=None, secondary_text=None)
 
+        # Rozpocznij kalibrację MQ-3
         self._calibrate_mq3_start()
 
     def _stop_timer(self, timer_obj: QtCore.QTimer):
+        """Zatrzymaj timer jeżeli jest aktywny."""
         try:
             if timer_obj.isActive():
                 timer_obj.stop()
@@ -189,6 +232,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
 
     def set_message(self, tekst_gora, tekst_srodek=None, color="white"):
+        """Ustaw tekst na górnym i środkowym pasku wraz z kolorem."""
         if color == "green":
             kolor_css = "#00ff00"
         elif color == "red":
@@ -207,6 +251,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def show_buttons(self, primary_text=None, secondary_text=None):
+        """Pokaż lub ukryj przyciski z tekstami."""
         if primary_text is None:
             self.btn_primary.hide()
         else:
@@ -219,9 +264,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.btn_secondary.setText(secondary_text)
             self.btn_secondary.show()
 
-    # --- stany FSM ---
-
+    # ----- Stany FSM -----
     def enter_idle(self):
+        """Przejście do stanu IDLE."""
         self.state = "IDLE"
         self.current_emp_id = None
         self.current_emp_name = None
@@ -252,6 +297,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_buttons(primary_text=None, secondary_text="Wprowadź PIN")
 
     def enter_detect(self):
+        """Przejście do stanu DETECT."""
         self.state = "DETECT"
         self.detect_fail_count = 0
         self._stable_emp_id = None
@@ -267,6 +313,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_buttons(primary_text=None, secondary_text="Wprowadź PIN")
 
     def enter_pin_entry(self):
+        """Przejście do stanu wprowadzania PIN."""
         self.state = "PIN_ENTRY"
         self._stop_timer(self.face_timer)
         self._stop_timer(self.ui_timer)
@@ -277,6 +324,11 @@ class MainWindow(QtWidgets.QMainWindow):
         dlg = KeypadDialog(self, title="Wprowadź PIN")
         if dlg.exec() == QtWidgets.QDialog.Accepted:
             pin = dlg.value()
+            # Wczytaj aktualną bazę pracowników na wypadek modyfikacji przez panel admina
+            try:
+                self.facedb._load_employees()
+            except Exception:
+                pass
             emp = self.facedb.emp_by_pin.get(pin)
             if not emp:
                 self.set_message("Zły PIN – brak danych", "", color="red")
@@ -293,6 +345,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.enter_idle()
 
     def enter_detect_retry(self):
+        """Stan ponownej próby rozpoznania po treningu."""
         self.state = "DETECT_RETRY"
         self.detect_retry_count = 0
 
@@ -306,6 +359,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_buttons(primary_text=None, secondary_text=None)
 
     def enter_identified_wait(self):
+        """Stan po rozpoznaniu – krótki timer przed kalibracją."""
         self.state = "IDENTIFIED_WAIT"
         self.identified_seconds_left = 5
 
@@ -325,6 +379,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_buttons(primary_text=None, secondary_text=None)
 
     def enter_calibrate(self):
+        """Stan kalibracji przed pomiarem."""
         self.state = "CALIBRATE"
         self.calibrate_seconds_left = 3
         self.calibrate_good_face = False
@@ -345,6 +400,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_buttons(primary_text=None, secondary_text=None)
 
     def enter_measure(self):
+        """Stan pomiaru stężenia alkoholu."""
         self.state = "MEASURE"
         self.measure_samples = []
         self.measure_deadline = time.time() + CONFIG["measure_seconds"]
@@ -367,6 +423,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_buttons(primary_text=None, secondary_text=None)
 
     def enter_decide(self, promille):
+        """Podejmij decyzję na podstawie wyniku pomiaru."""
         self.last_promille = promille
         tekst_pomiar = f"Pomiar: {promille:.3f} [‰]"
 
@@ -376,6 +433,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
 
+        # PASS
         if promille <= CONFIG["threshold_pass"]:
             self.state = "DECIDE_PASS"
             self.set_message(tekst_pomiar, "Przejście otwarte", color="green")
@@ -384,6 +442,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(2500, self.enter_idle)
             return
 
+        # RETRY
         if promille < CONFIG["threshold_deny"]:
             self.state = "RETRY"
             self.set_message(
@@ -394,14 +453,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.show_buttons(primary_text="Ponów pomiar", secondary_text="Odmowa")
             return
 
+        # DENY
         self.state = "DECIDE_DENY"
         self.set_message(tekst_pomiar, "Odmowa", color="red")
         self.show_buttons(primary_text=None, secondary_text=None)
         self.trigger_gate_and_log(False, promille)
         QtCore.QTimer.singleShot(3000, self.enter_idle)
 
-    # --- ticki odliczania ---
-
+    # ----- Ticki odliczania -----
     def on_identified_tick(self):
         if self.state != "IDENTIFIED_WAIT":
             self._stop_timer(self.identified_timer)
@@ -471,14 +530,15 @@ class MainWindow(QtWidgets.QMainWindow):
             promille = self.mq3.promille_from_samples(self.measure_samples)
             self.enter_decide(promille)
 
-    # --- przyciski overlay ---
-
+    # ----- Przycisk primary -----
     def on_btn_primary(self):
         if self.state == "RETRY":
             self.enter_measure()
 
+    # ----- Przycisk secondary -----
     def on_btn_secondary(self):
         if self.state == "RETRY":
+            # Odmowa w stanie RETRY
             self.set_message("Odmowa", "", color="red")
             self.trigger_gate_and_log(False, self.last_promille)
             self.show_buttons(primary_text=None, secondary_text=None)
@@ -488,8 +548,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.state in ("IDLE", "DETECT"):
             self.enter_pin_entry()
 
-    # --- zbieranie próbek twarzy po PIN ---
-
+    # ----- Zbieranie próbek twarzy po PIN -----
     def collect_new_shots_for_current_emp(self):
         emp_id = self.current_emp_id
         if not emp_id:
@@ -572,6 +631,7 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(80, tick)
 
     def training_start(self, post_action):
+        """Uruchom reindeksację twarzy w osobnym wątku."""
         self.post_training_action = post_action
 
         self.set_message("Proszę czekać…", "Trening AI", color="white")
@@ -597,13 +657,13 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.enter_detect()
 
-    # --- bramka + logi ---
-
+    # ----- bramka + logi -----
     def trigger_gate_and_log(self, pass_ok: bool, promille: float):
         emp_name = self.current_emp_name or "<nieznany>"
         emp_id = self.current_emp_id or "<none>"
         ts = datetime.now().isoformat()
 
+        # Obsługa bramki
         if pass_ok:
             GPIO.output(CONFIG["gate_gpio"], GPIO.HIGH)
 
@@ -625,14 +685,41 @@ class MainWindow(QtWidgets.QMainWindow):
                 [ts, "deny_access", emp_name, emp_id]
             )
 
+        # Zapisz pomiar do pliku
         log_csv(
             os.path.join(CONFIG["logs_dir"], "measurements.csv"),
             ["datetime", "employee_name", "employee_id", "promille", "fallback_pin"],
             [ts, emp_name, emp_id, f"{promille:.3f}", int(self.fallback_pin_flag)]
         )
 
-    # --- preview helpers ---
+        # Dodatkowo zapisz log do bazy MongoDB, jeżeli pymongo jest dostępne
+        if MongoClient is not None:
+            try:
+                client = MongoClient(CONFIG.get("mongo_uri", "mongodb://localhost:27017"))
+                db = client[CONFIG.get("mongodb_db_name", "alkotester")]
+                col = db["entries"]
+                # Ustal PIN pracownika
+                emp_pin = None
+                try:
+                    entry = self.facedb.emp_by_id.get(self.current_emp_id or "")
+                    if entry:
+                        emp_pin = entry.get("pin")
+                except Exception:
+                    emp_pin = None
+                doc = {
+                    "datetime": ts,
+                    "employee_id": emp_id,
+                    "employee_name": emp_name,
+                    "employee_pin": emp_pin,
+                    "promille": float(promille),
+                    "result": "pass" if pass_ok else "deny",
+                    "fallback_pin": bool(self.fallback_pin_flag),
+                }
+                col.insert_one(doc)
+            except Exception:
+                pass
 
+    # ----- Helpery preview -----
     def _crop_and_scale_fill(self, src_rgb, target_w, target_h):
         if target_w <= 0 or target_h <= 0:
             return None
@@ -655,7 +742,6 @@ class MainWindow(QtWidgets.QMainWindow):
         x0 = (target_w - nowe_w) // 2
         y0 = (target_h - nowe_h) // 2
         wynik[y0:y0 + nowe_h, x0:x0 + nowe_w] = przeskalowany
-
         return wynik
 
     def _online_learn_face(self, emp_id: str):
@@ -686,12 +772,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
 
             self.facedb.add_online_face_sample(emp_id, twarz_bgr)
-
         except Exception:
             pass
 
-    # --- CAMERA TICK ---
-
+    # ----- CAMERA TICK -----
     def on_camera_tick(self):
         frame_bgr = self.cam.get_frame_bgr()
         if frame_bgr is None:
@@ -733,8 +817,7 @@ class MainWindow(QtWidgets.QMainWindow):
         qimg = QtGui.QImage(fitted.data, w, h, 3 * w, QtGui.QImage.Format_RGB888)
         self.view.setPixmap(QtGui.QPixmap.fromImage(qimg))
 
-    # --- FACE TICK ---
-
+    # ----- FACE TICK -----
     def on_face_tick(self):
         if self.frame_last_bgr is None:
             return
@@ -744,11 +827,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.last_face_bbox = bbox
         self.last_confidence = conf or 0.0
 
+        # IDLE -> DETECT
         if self.state == "IDLE":
             if bbox is not None:
                 self.enter_detect()
             return
 
+        # DETECT -> rozpoznanie stabilne lub porażka
         if self.state == "DETECT":
             if bbox is None:
                 self.detect_fail_count = 0
@@ -774,6 +859,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._stable_emp_id == emp_id and
                 self._stable_count >= CONFIG["recognition_stable_ticks"]
             ):
+                # rozpoznano pewnie
                 self.current_emp_id = emp_id
                 self.current_emp_name = emp_name
                 self.fallback_pin_flag = False
@@ -783,6 +869,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.enter_identified_wait()
                 return
 
+            # bez stabilnego rozpoznania
             self.detect_fail_count += 1
             if self.detect_fail_count >= CONFIG["detect_fail_limit"]:
                 self.enter_pin_entry()
@@ -794,9 +881,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.set_message(now_str(), f"pewność: {conf:.0f}%", color="white")
             return
 
+        # DETECT_RETRY -> sprawdzanie konkretnego pracownika
         if self.state == "DETECT_RETRY":
             self.detect_retry_count += 1
-
             if (
                 emp_id == self.current_emp_id and
                 conf >= CONFIG["recognition_conf_ok"]
@@ -819,6 +906,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
+        # CALIBRATE -> zbieranie informacji o twarzy
         if self.state == "CALIBRATE":
             if self.last_face_bbox is not None:
                 self.calibrate_seen_face = True
@@ -827,10 +915,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.calibrate_good_face = True
             return
 
+        # inne stany – brak akcji
         return
 
-    # --- UI tick (zegarek) ---
-
+    # ----- UI tick (zegarek) -----
     def on_ui_tick(self):
         if self.state in ("IDLE", "DETECT"):
             self.lbl_top.setText(now_str())
@@ -838,8 +926,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 "color:white; font-size:28px; font-weight:600;"
             )
 
-    # --- baseline MQ-3 ---
-
+    # ----- baseline MQ-3 -----
     def _calibrate_mq3_start(self):
         def worker():
             self.mq3.calibrate_baseline()
@@ -855,9 +942,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _baseline_done(self):
         self.enter_idle()
 
-    # --- zamykanie ---
-
+    # ----- zamykanie -----
     def closeEvent(self, e: QtGui.QCloseEvent):
+        # zatrzymaj timery
         for t in [
             getattr(self, "measure_timer", None),
             getattr(self, "calibrate_timer", None),
@@ -872,21 +959,25 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
+        # zatrzymaj kamerę
         try:
             self.cam.stop()
         except Exception:
             pass
 
+        # zamknij SPI
         try:
             self.adc.close()
         except Exception:
             pass
 
+        # GPIO cleanup
         try:
             GPIO.cleanup()
         except Exception:
             pass
 
+        # domknij dialogi
         for w in QtWidgets.QApplication.topLevelWidgets():
             if w is not self:
                 try:
@@ -898,6 +989,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 def setup_qt_env():
+    """Ustaw zmienne środowiskowe wymagane przez Qt na Raspberry Pi."""
     os.environ.setdefault("DISPLAY", ":0")
     os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
@@ -911,6 +1003,9 @@ def main():
 
     app = QtWidgets.QApplication(sys.argv)
     win = MainWindow()
+
+    # Uruchom serwer administracyjny w osobnym wątku
+    threading.Thread(target=admin_server.run_server, daemon=True).start()
 
     if CONFIG["fullscreen"]:
         win.showFullScreen()

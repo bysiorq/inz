@@ -1,5 +1,15 @@
-# config.py
+"""
+Konfiguracja aplikacji Alkotester.
 
+Plik ten zawiera wszystkie parametry konfiguracyjne wykorzystywane przez
+główną aplikację, system rozpoznawania twarzy, obsługę kamery oraz
+dodatkowy serwer administracyjny.  Pola definiujące widoczność
+ekranu, parametry czujnika MQ‑3, progi decyzyjne itp. nie powinny
+być modyfikowane bez zrozumienia konsekwencji dla działania
+urządzenia.
+"""
+
+# Podstawowa konfiguracja urządzenia
 CONFIG = {
     # fizyczna rozdziałka panelu DSI (pionowo)
     "screen_width": 720,
@@ -83,5 +93,24 @@ CONFIG = {
         "id": "1",
         "name": "Kamil Karolak",
         "pin": "0000",
-    }
+    },
+
+    # --- ustawienia panelu administratora ---
+    # dane logowania (w prawdziwym systemie należy zmienić na własne)
+    "admin_username": "admin",
+    "admin_password": "admin123",
+
+    # MongoDB – URI i nazwa bazy danych dla logów
+    "mongo_uri": "mongodb://localhost:27017",
+    "mongodb_db_name": "alkotester",
+
+    # Ścieżki do plików certyfikatu i klucza prywatnego dla HTTPS.
+    # Nie są używane gdy serwer panelu działa w trybie HTTP.
+    "ssl_cert_path": "cert.pem",
+    "ssl_key_path": "key.pem",
+
+    # Port na którym będzie nasłuchiwał panel administratora HTTP.
+    # Domyślnie używany w run_server() jeśli nie zostanie podany.
+    "admin_port": 5000,
+
 }
