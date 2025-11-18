@@ -82,36 +82,28 @@ def _base_dir() -> str:
 # PIN / ID helpers
 # ---------------------------------------------------------------------
 
-def _generate_unique_pin() -> str:
-    """Generate a unique four-digit PIN not already present in employees.json."""
-    import random
+    def _generate_unique_pin() -> str:
+        """Generate a unique four-digit PIN not already present in employees.json."""
+        import random
 
-    existing_pins = set()
-    try:
-        emp_path = CONFIG["employees_json"]
-        if not os.path.isabs(emp_path):
-            emp_path = os.path.join(_base_dir(), emp_path)
-        with open(emp_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            for emp in data.get("employees", []):
-                pin = emp.get("pin")
-                if pin:
-                    existing_pins.add(str(pin))
-    except Exception:
-        pass
+        existing_pins = set()
+        try:
+            emp_path = CONFIG["employees_json"]
+            if not os.path.isabs(emp_path):
+                emp_path = os.path.join(_base_dir(), emp_path)
+            with open(emp_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for emp in data.get("employees", []):
+                    pin = emp.get("pin")
+                    if pin:
+                        existing_pins.add(str(pin))
+        except Exception:
+            pass
 
-    while True:
-        candidate = f"{random.randint(0, 9999):04d}"
-        if candidate not in existing_pins:
-            return candidate
-
-
-    def _log_to_mongo_async(self, ts, emp_id, emp_name, emp_pin, promille, pass_ok: bool):
-        """Nieelastyczne logowanie do Mongo – w osobnym wątku, z krótkimi timeoutami."""
-        global _MONGO_CLIENT, _MONGO_DISABLED
-
-        if MongoClient is None or _MONGO_DISABLED:
-            return
+        while True:
+            candidate = f"{random.randint(0, 9999):04d}"
+            if candidate not in existing_pins:
+                return candidate
 
     def worker():
         global _MONGO_CLIENT, _MONGO_DISABLED
@@ -140,54 +132,6 @@ def _generate_unique_pin() -> str:
             _MONGO_DISABLED = True
 
     threading.Thread(target=worker, daemon=True).start()
-
-    def trigger_gate_and_log(self, pass_ok: bool, promille: float):
-        emp_name = self.current_emp_name or "<nieznany>"
-        emp_id = self.current_emp_id or "<none>"
-        ts = datetime.now().isoformat()
-
-        print(f"[LOG] {ts} emp={emp_name} ({emp_id}) promille={promille:.3f} pass_ok={pass_ok}")
-
-        # Obsługa bramki (to zostawiamy w głównym wątku – jest szybkie)
-        if pass_ok:
-            GPIO.output(CONFIG["gate_gpio"], GPIO.HIGH)
-
-            def pulse():
-                time.sleep(CONFIG["gate_pulse_sec"])
-                GPIO.output(CONFIG["gate_gpio"], GPIO.LOW)
-
-            threading.Thread(target=pulse, daemon=True).start()
-
-            log_csv(
-                os.path.join(CONFIG["logs_dir"], "events.csv"),
-                ["datetime", "event", "employee_name", "employee_id"],
-                [ts, "gate_open", emp_name, emp_id]
-            )
-        else:
-            log_csv(
-                os.path.join(CONFIG["logs_dir"], "events.csv"),
-                ["datetime", "event", "employee_name", "employee_id"],
-                [ts, "deny_access", emp_name, emp_id]
-            )
-
-        # Zapisz pomiar do pliku (szybkie IO)
-        log_csv(
-            os.path.join(CONFIG["logs_dir"], "measurements.csv"),
-            ["datetime", "employee_name", "employee_id", "promille", "fallback_pin"],
-            [ts, emp_name, emp_id, f"{promille:.3f}", int(self.fallback_pin_flag)]
-        )
-
-        # Dodatkowo zapisz log do bazy MongoDB, jeżeli pymongo jest dostępne
-        # → ALE w tle, z krótkim timeoutem
-        emp_pin = None
-        try:
-            entry = self.facedb.emp_by_id.get(self.current_emp_id or "")
-            if entry:
-                emp_pin = entry.get("pin")
-        except Exception:
-            emp_pin = None
-
-        self._log_to_mongo_async(ts, emp_id, emp_name, emp_pin, promille, pass_ok)
 
 
 

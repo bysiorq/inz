@@ -74,8 +74,8 @@ CONFIG = {
     "measure_seconds": 5.0,
 
     # progi decyzji [‰]
-    "threshold_pass": 0.000,
-    "threshold_deny": 0.500,
+    "threshold_pass": 0.002,
+    "threshold_deny": 0.001,
 
     # przekaźnik bramki
     "gate_gpio": 18,
@@ -104,10 +104,9 @@ CONFIG = {
     "mongo_uri": "mongodb://localhost:27017",
     "mongodb_db_name": "alkotester",
 
-    # Ścieżki do plików certyfikatu i klucza prywatnego dla HTTPS.
-    # Nie są używane gdy serwer panelu działa w trybie HTTP.
-    "ssl_cert_path": "cert.pem",
-    "ssl_key_path": "key.pem",
+
+    "mongo_uri": "mongodb+srv://user:pass@cluster0-xxx.mongodb.net/alkotester?retryWrites=true&w=majority",
+    "mongodb_db_name": "alkotester",
 
     # Port na którym będzie nasłuchiwał panel administratora HTTP.
     # Domyślnie używany w run_server() jeśli nie zostanie podany.

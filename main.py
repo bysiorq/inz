@@ -34,11 +34,14 @@ from keypad import KeypadDialog
 # Import admin_server to start the web interface in a separate thread
 # import admin_server
 
-# Import Mongo client for logging to the database
 try:
     from pymongo import MongoClient  # type: ignore
 except Exception:
     MongoClient = None  # if PyMongo is unavailable we fall back to CSV only
+
+# ---- NOWE: lekki, współdzielony klient Mongo na RasPi ----
+_MONGO_CLIENT = None
+_MONGO_DISABLED = False
 
 
 def _face_quality(szare_roi):
@@ -444,7 +447,6 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             thr_deny = 0.5
 
-        # Sanity check – jak ktoś odwróci progi w configu, to ich nie odwracamy świata,
         # tylko zamieniamy miejscami i logujemy ostrzeżenie.
         if thr_pass > thr_deny:
             print(
@@ -732,6 +734,47 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.enter_detect()
 
+    def _log_to_mongo_async(self, ts, emp_id, emp_name, emp_pin, promille, pass_ok: bool):
+        """
+        Lekki logger do Mongo w tle:
+        - bardzo krótkie timeouty,
+        - jeśli raz się wywali -> wyłącza się na stałe (_MONGO_DISABLED = True),
+        - ZERO blokowania GUI / FSM (działa w osobnym wątku).
+        """
+        global _MONGO_CLIENT, _MONGO_DISABLED
+
+        if MongoClient is None or _MONGO_DISABLED:
+            return
+
+        def worker():
+            global _MONGO_CLIENT, _MONGO_DISABLED
+            try:
+                if _MONGO_CLIENT is None:
+                    _MONGO_CLIENT = MongoClient(
+                        CONFIG.get("mongo_uri", "mongodb://localhost:27017"),
+                        serverSelectionTimeoutMS=200,
+                        connectTimeoutMS=200,
+                        socketTimeoutMS=200,
+                    )
+                db = _MONGO_CLIENT[CONFIG.get("mongodb_db_name", "alkotester")]
+                col = db["entries"]
+                doc = {
+                    "datetime": ts,
+                    "employee_id": emp_id,
+                    "employee_name": emp_name,
+                    "employee_pin": emp_pin,
+                    "promille": float(promille),
+                    "result": "pass" if pass_ok else "deny",
+                    "fallback_pin": bool(self.fallback_pin_flag),
+                }
+                col.insert_one(doc)
+            except Exception as e:
+                print(f"[Mongo] wyłączam logowanie do Mongo po błędzie: {e}")
+                _MONGO_DISABLED = True
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
     # ----- bramka + logi -----
     def trigger_gate_and_log(self, pass_ok: bool, promille: float):
         emp_name = self.current_emp_name or "<nieznany>"
@@ -760,39 +803,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 [ts, "deny_access", emp_name, emp_id]
             )
 
-        # Zapisz pomiar do pliku
+        # Zapisz pomiar do pliku – zawsze lokalny CSV
         log_csv(
             os.path.join(CONFIG["logs_dir"], "measurements.csv"),
             ["datetime", "employee_name", "employee_id", "promille", "fallback_pin"],
             [ts, emp_name, emp_id, f"{promille:.3f}", int(self.fallback_pin_flag)]
         )
 
-        # Dodatkowo zapisz log do bazy MongoDB, jeżeli pymongo jest dostępne
-        if MongoClient is not None:
-            try:
-                client = MongoClient(CONFIG.get("mongo_uri", "mongodb://localhost:27017"))
-                db = client[CONFIG.get("mongodb_db_name", "alkotester")]
-                col = db["entries"]
-                # Ustal PIN pracownika
-                emp_pin = None
-                try:
-                    entry = self.facedb.emp_by_id.get(self.current_emp_id or "")
-                    if entry:
-                        emp_pin = entry.get("pin")
-                except Exception:
-                    emp_pin = None
-                doc = {
-                    "datetime": ts,
-                    "employee_id": emp_id,
-                    "employee_name": emp_name,
-                    "employee_pin": emp_pin,
-                    "promille": float(promille),
-                    "result": "pass" if pass_ok else "deny",
-                    "fallback_pin": bool(self.fallback_pin_flag),
-                }
-                col.insert_one(doc)
-            except Exception:
-                pass
+        # Mongo – tylko jeżeli dostępne, w tle
+        emp_pin = None
+        try:
+            entry = self.facedb.emp_by_id.get(self.current_emp_id or "")
+            if entry:
+                emp_pin = entry.get("pin")
+        except Exception:
+            emp_pin = None
+
+        self._log_to_mongo_async(ts, emp_id, emp_name, emp_pin, promille, pass_ok)
+
 
     # ----- Helpery preview -----
     def _crop_and_scale_fill(self, src_rgb, target_w, target_h):
