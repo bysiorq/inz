@@ -245,7 +245,12 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         base_url = CONFIG.get("server_base_url")
         token = CONFIG.get("sync_token")
-        employees_path = CONFIG.get("employees_json")
+        employees_path = CONFIG.get("employees_json", "data/employees.json")
+
+        # Upewnij się, że mamy absolutną ścieżkę (katalog projektu)
+        if not os.path.isabs(employees_path):
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            employees_path = os.path.join(base_dir, employees_path)
 
         if not base_url:
             print("[SYNC] Brak server_base_url w CONFIG – pomijam sync.")
@@ -282,6 +287,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         except Exception as e:
             print(f"[SYNC] Błąd pobierania z serwera: {e}")
+
 
     def on_sync_tick(self):
         """Okresowy sync z masterem."""
@@ -390,9 +396,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
 
+        # ---- NOWOŚĆ: wymuś sync z Renderem przed wpisaniem PIN-u ----
+        try:
+            print("[SYNC] Ręczny sync przed wprowadzeniem PIN-u...")
+            self.sync_employees_from_server()
+        except Exception as e:
+            print(f"[SYNC] Błąd sync przy wprowadzaniu PIN: {e}")
+
         dlg = KeypadDialog(self, title="Wprowadź PIN")
         if dlg.exec() == QtWidgets.QDialog.Accepted:
             pin = dlg.value()
+            # Wczytaj aktualną bazę pracowników na wypadek modyfikacji przez panel admina
             try:
                 self.facedb._load_employees()
             except Exception:
@@ -411,6 +425,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.collect_new_shots_for_current_emp()
         else:
             self.enter_idle()
+
 
     def enter_detect_retry(self):
         """Stan ponownej próby rozpoznania po treningu."""

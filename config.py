@@ -84,7 +84,7 @@ CONFIG = {
 
     # --- MongoDB Atlas: logi pomiarów ---
     # UZUPEŁNIJ PRAWIDŁOWE HASŁO ZMIENIAJĄC <TWOJE_NOWE_HASLO>
-    "mongo_uri": "mongodb+srv://kamilox123000_db_user:<TWOJE_NOWE_HASLO>@alkotesterdb.bfua4dg.mongodb.net/alkotester?retryWrites=true&w=majority&appName=AlkotesterDB",
+    "mongo_uri": "mongodb+srv://kamilox123000_db_user:Mos9YrkkJYx5WW2a@alkotesterdb.bfua4dg.mongodb.net/alkotester?retryWrites=true&w=majority&appName=AlkotesterDB",
     "mongodb_db_name": "alkotester",
 
     # --- adres panelu na Render (master) ---
