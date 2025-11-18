@@ -40,7 +40,7 @@ CONFIG = {
     "yunet_top_k": 5000,
 
     # --- rozpoznawanie twarzy
-    "face_detect_interval_ms": 750,
+    "face_detect_interval_ms": 1000,
     "face_min_size": 120,
     "recognition_conf_ok": 55.0,
     "recognition_conf_low": 20.0,
@@ -71,11 +71,11 @@ CONFIG = {
     "mq3_channel": 0,
     "baseline_samples": 150,
     "promille_scale": 220.0,
-    "measure_seconds": 3.0,
+    "measure_seconds": 5.0,
 
     # progi decyzji [‰]
     "threshold_pass": 0.000,
-    "threshold_deny": 0.900,
+    "threshold_deny": 0.500,
 
     # przekaźnik bramki
     "gate_gpio": 18,

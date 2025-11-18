@@ -32,7 +32,7 @@ from camera_manager import CameraManager
 from keypad import KeypadDialog
 
 # Import admin_server to start the web interface in a separate thread
-import admin_server
+# import admin_server
 
 # Import Mongo client for logging to the database
 try:
@@ -359,45 +359,45 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_buttons(primary_text=None, secondary_text=None)
 
     def enter_identified_wait(self):
-        """Stan po rozpoznaniu – krótki timer przed kalibracją."""
+        """
+        Przejście do stanu oczekiwania przed pomiarem.
+
+        Po rozpoznaniu twarzy (lub po zatwierdzeniu PIN-u) rozpoczyna się
+        odliczanie do pomiaru. W tym czasie kamera pozostaje aktywna, aby
+        upewnić się, że twarz pozostaje w kadrze i znajduje się wystarczająco
+        blisko. Gdy licznik dojdzie do zera, na podstawie zebranych
+        informacji podejmowana jest decyzja o przejściu do pomiaru lub
+        powrocie do stanu DETECT.
+        """
         self.state = "IDENTIFIED_WAIT"
+        # Odliczamy od 5 w dół
         self.identified_seconds_left = 5
 
-        self.last_face_bbox = None
-        self.last_confidence = 0.0
+        # Zresetuj detekcję twarzy / kalibrację
+        self.calibrate_good_face = False
+        self.calibrate_seen_face = False
 
-        self._stop_timer(self.face_timer)
+        # Nie resetuj self.last_face_bbox ani confidence – chcemy widzieć ramkę
+        # Włącz detekcję twarzy podczas odliczania
+        self.face_timer.start(CONFIG["face_detect_interval_ms"])
+
+        # Zatrzymaj inne timery
+        self._stop_timer(self.ui_timer)
         self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
-        self._stop_timer(self.ui_timer)
+        self._stop_timer(self.identified_timer)
 
+        # Uruchom timer, który będzie wywoływał on_identified_tick co sekundę
         self.identified_timer.start(1000)
 
-        tekst_gora = f"Cześć {self.current_emp_name or ''}"
-        tekst_srodek = f"Za {self.identified_seconds_left} s zaczynamy pomiar"
+        # Pokaż komunikat: odliczanie na górze, przywitanie na dole
+        tekst_gora = f"Za {self.identified_seconds_left} s zaczynamy pomiar"
+        tekst_srodek = f"Cześć {self.current_emp_name or ''}"
         self.set_message(tekst_gora, tekst_srodek, color="white")
         self.show_buttons(primary_text=None, secondary_text=None)
 
     def enter_calibrate(self):
-        """Stan kalibracji przed pomiarem."""
-        self.state = "CALIBRATE"
-        self.calibrate_seconds_left = 3
-        self.calibrate_good_face = False
-        self.calibrate_seen_face = False
-
-        self.face_timer.start(CONFIG["face_detect_interval_ms"])
-        self._stop_timer(self.ui_timer)
-        self._stop_timer(self.identified_timer)
-        self._stop_timer(self.measure_timer)
-
-        self.calibrate_timer.start(1000)
-
-        self.set_message(
-            "Ustaw się prosto, podejdź bliżej",
-            f"Start za {self.calibrate_seconds_left} s",
-            color="white",
-        )
-        self.show_buttons(primary_text=None, secondary_text=None)
+        self.enter_identified_wait()
 
     def enter_measure(self):
         """Stan pomiaru stężenia alkoholu."""
@@ -422,28 +422,61 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.show_buttons(primary_text=None, secondary_text=None)
 
+    @QtCore.pyqtSlot()
+    def _measure_done(self):
+        """Slot wywoływany z wątku pomiarowego po policzeniu promili."""
+        promille = getattr(self, "_pending_promille", 0.0)
+        self.enter_decide(promille)
+
+
     def enter_decide(self, promille):
         """Podejmij decyzję na podstawie wyniku pomiaru."""
-        self.last_promille = promille
-        tekst_pomiar = f"Pomiar: {promille:.3f} [‰]"
+        # Upewnij się, że mamy float
+        self.last_promille = float(promille)
 
+        # Wczytaj progi jako liczby zmiennoprzecinkowe
+        try:
+            thr_pass = float(CONFIG.get("threshold_pass", 0.0))
+        except Exception:
+            thr_pass = 0.0
+        try:
+            thr_deny = float(CONFIG.get("threshold_deny", 0.5))
+        except Exception:
+            thr_deny = 0.5
+
+        # Sanity check – jak ktoś odwróci progi w configu, to ich nie odwracamy świata,
+        # tylko zamieniamy miejscami i logujemy ostrzeżenie.
+        if thr_pass > thr_deny:
+            print(
+                f"[WARN] threshold_pass ({thr_pass}) > threshold_deny ({thr_deny}) – zamieniam kolejność"
+            )
+            thr_pass, thr_deny = thr_deny, thr_pass
+
+        print(
+            f"[DECIDE] promille={self.last_promille:.3f}, "
+            f"pass <= {thr_pass:.3f}, deny >= {thr_deny:.3f}"
+        )
+
+        tekst_pomiar = f"Pomiar: {self.last_promille:.3f} [‰]"
+
+        # Zatrzymaj timery zanim zmienimy stan
         self._stop_timer(self.face_timer)
         self._stop_timer(self.ui_timer)
         self._stop_timer(self.identified_timer)
         self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
 
-        # PASS
-        if promille <= CONFIG["threshold_pass"]:
+        # PASS – strefa "zielona"
+        if self.last_promille <= thr_pass:
             self.state = "DECIDE_PASS"
             self.set_message(tekst_pomiar, "Przejście otwarte", color="green")
             self.show_buttons(primary_text=None, secondary_text=None)
-            self.trigger_gate_and_log(True, promille)
+            self.trigger_gate_and_log(True, self.last_promille)
             QtCore.QTimer.singleShot(2500, self.enter_idle)
             return
 
-        # RETRY
-        if promille < CONFIG["threshold_deny"]:
+        # RETRY – strefa "żółta"
+        if self.last_promille < thr_deny:
             self.state = "RETRY"
             self.set_message(
                 tekst_pomiar,
@@ -453,27 +486,51 @@ class MainWindow(QtWidgets.QMainWindow):
             self.show_buttons(primary_text="Ponów pomiar", secondary_text="Odmowa")
             return
 
-        # DENY
+        # DENY – strefa "czerwona"
         self.state = "DECIDE_DENY"
         self.set_message(tekst_pomiar, "Odmowa", color="red")
         self.show_buttons(primary_text=None, secondary_text=None)
-        self.trigger_gate_and_log(False, promille)
+        self.trigger_gate_and_log(False, self.last_promille)
         QtCore.QTimer.singleShot(3000, self.enter_idle)
+
 
     # ----- Ticki odliczania -----
     def on_identified_tick(self):
+        # Ten tick działa tylko w stanie IDENTIFIED_WAIT
         if self.state != "IDENTIFIED_WAIT":
             self._stop_timer(self.identified_timer)
             return
 
+        # Zmniejsz licznik i zaktualizuj napis
         self.identified_seconds_left -= 1
         if self.identified_seconds_left > 0:
-            tekst_gora = f"Cześć {self.current_emp_name or ''}"
-            tekst_srodek = f"Za {self.identified_seconds_left} s zaczynamy pomiar"
+            tekst_gora = f"Za {self.identified_seconds_left} s zaczynamy pomiar"
+            tekst_srodek = f"Cześć {self.current_emp_name or ''}"
             self.set_message(tekst_gora, tekst_srodek, color="white")
-        else:
-            self._stop_timer(self.identified_timer)
-            self.enter_calibrate()
+            return
+
+        # Licznik się skończył: zatrzymaj timer
+        self._stop_timer(self.identified_timer)
+
+        # Na koniec odliczania musimy zdecydować, czy przejść do pomiaru, czy wrócić
+        # do DETECT.  Logika zaczerpnięta ze starego stanu CALIBRATE:
+        # 1. Jeżeli fallback_pin_flag jest ustawiona (awaryjne dopuszczenie), od razu pomiar.
+        if self.fallback_pin_flag:
+            self.enter_measure()
+            return
+        # 2. Jeżeli twarz była wystarczająco blisko (duża w kadrze), pomiar.
+        if self.calibrate_good_face:
+            self.enter_measure()
+            return
+        # 3. Jeżeli ktoś był widoczny w kadrze, ale za mały, oznaczamy fallback_pin_flag
+        #    i przechodzimy do pomiaru.  To pozwala śledzić, że osoba obniżyła głowę
+        #    do ustnika i zniknęła z kadru.
+        if self.calibrate_seen_face:
+            self.fallback_pin_flag = True
+            self.enter_measure()
+            return
+        # 4. W przeciwnym razie wracamy do szukania twarzy.
+        self.enter_detect()
 
     def on_calibrate_tick(self):
         if self.state != "CALIBRATE":
@@ -526,9 +583,27 @@ class MainWindow(QtWidgets.QMainWindow):
                 color="white",
             )
         else:
+            # Koniec okna pomiarowego – zatrzymujemy timer
             self._stop_timer(self.measure_timer)
-            promille = self.mq3.promille_from_samples(self.measure_samples)
-            self.enter_decide(promille)
+
+            samples = list(self.measure_samples)
+
+            def worker():
+                try:
+                    promille = float(self.mq3.promille_from_samples(samples))
+                except Exception as e:
+                    print(f"[MEASURE] błąd liczenia promili: {e}")
+                    promille = 0.0
+                # Zapisz wynik i wróć na główny wątek Qt
+                self._pending_promille = promille
+                QtCore.QMetaObject.invokeMethod(
+                    self,
+                    "_measure_done",
+                    QtCore.Qt.QueuedConnection
+                )
+
+            threading.Thread(target=worker, daemon=True).start()
+
 
     # ----- Przycisk primary -----
     def on_btn_primary(self):
@@ -539,7 +614,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_btn_secondary(self):
         if self.state == "RETRY":
             # Odmowa w stanie RETRY
-            self.set_message(tekst_pomiar,"Odmowa", color="red")
+            self.set_message("Odmowa", "", color="red")
             self.trigger_gate_and_log(False, self.last_promille)
             self.show_buttons(primary_text=None, secondary_text=None)
             QtCore.QTimer.singleShot(2000, self.enter_idle)
@@ -906,8 +981,11 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
-        # CALIBRATE -> zbieranie informacji o twarzy
-        if self.state == "CALIBRATE":
+        # CALIBRATE lub IDENTIFIED_WAIT -> zbieranie informacji o twarzy
+        # W trakcie odliczania do pomiaru lub starej kalibracji monitorujemy,
+        # czy twarz pozostaje w kadrze i czy jest wystarczająco duża.  Dzięki temu
+        # możemy przejść do pomiaru nawet jeśli osoba nachyliła się do ustnika.
+        if self.state in ("CALIBRATE", "IDENTIFIED_WAIT"):
             if self.last_face_bbox is not None:
                 self.calibrate_seen_face = True
                 (_, _, w, h) = self.last_face_bbox
@@ -1005,7 +1083,7 @@ def main():
     win = MainWindow()
 
     # Uruchom serwer administracyjny w osobnym wątku
-    threading.Thread(target=admin_server.run_server, daemon=True).start()
+    # threading.Thread(target=admin_server.run_server, daemon=True).start()
 
     if CONFIG["fullscreen"]:
         win.showFullScreen()
