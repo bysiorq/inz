@@ -130,8 +130,8 @@ def schedule():
             entries = list(cursor)
         except Exception:
             entries = []
-    # Fallback: read from local CSV log if Mongo is unavailable
-    if not entries and _entries_collection is None:
+    # Fallback: read from local CSV log if no entries were found in MongoDB
+    if not entries:
         try:
             # Path to measurements log
             log_path = os.path.join(CONFIG.get("logs_dir", "logs"), "measurements.csv")

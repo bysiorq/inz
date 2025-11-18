@@ -31,7 +31,7 @@ CONFIG = {
     #   "180"  = do góry nogami
     #   "none" = bez obrotu (poziomo)
     "camera_main_size": (1280, 720),  # (W,H) z sensora
-    "camera_fps": 60,
+    "camera_fps": 10,
     "rotate_dir": "cw",
 
     "yunet_model_path": "models/face_detection_yunet_2023mar.onnx",
@@ -57,10 +57,10 @@ CONFIG = {
     "quality_max_brightness": 210.0,
 
     # --- rozpoznawanie (anty-false-positive)
-    "recognition_min_match": 25,
-    "recognition_ratio_thresh": 0.75,
+    "recognition_min_match": 55,
+    "recognition_ratio_thresh": 0.85,
     "recognition_min_margin": 10,
-    "recognition_stable_ticks": 2,
+    "recognition_stable_ticks": 1,
 
     # --- on-line uczenie twarzy ---
     "online_max_samples_per_emp": 20,
@@ -111,5 +111,5 @@ CONFIG = {
 
     # Port na którym będzie nasłuchiwał panel administratora HTTP.
     # Domyślnie używany w run_server() jeśli nie zostanie podany.
-    "admin_port": 80,
+    "admin_port": 5000,
 }
