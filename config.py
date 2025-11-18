@@ -57,8 +57,8 @@ CONFIG = {
     "measure_seconds": 5.0,
 
     # --- progi decyzji [‰] ---
-    "threshold_pass": 0.000,
-    "threshold_deny": 0.2,
+    "threshold_pass": 0.2,
+    "threshold_deny": 0.5,
 
     # --- przekaźnik bramki ---
     "gate_gpio": 18,
