@@ -626,6 +626,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.enter_pin_entry()
 
     # ----- Zbieranie próbek twarzy po PIN -----
+    # ----- Zbieranie próbek twarzy po PIN -----
     def collect_new_shots_for_current_emp(self):
         emp_id = self.current_emp_id
         if not emp_id:
@@ -651,7 +652,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
             if time.time() > deadline:
                 self.last_face_bbox = None
-                self.set_message("Nie udało się zebrać próbek", "Spróbuj ponownie", color="red")
+                self.set_message(
+                    "Nie udało się zebrać próbek",
+                    "Spróbuj ponownie",
+                    color="red",
+                )
                 QtCore.QTimer.singleShot(2000, self.enter_idle)
                 return
 
@@ -663,10 +668,13 @@ class MainWindow(QtWidgets.QMainWindow):
             szary = cv2.cvtColor(klatka, cv2.COLOR_BGR2GRAY)
 
             twarze = self.facedb._detect_faces(klatka)
-
             if not twarze:
                 self.last_face_bbox = None
-                self.set_message("Przytrzymaj twarz w obwódce", f"Zbieram próbki {zapisane}/{ile_potrzeba}", color="white")
+                self.set_message(
+                    "Przytrzymaj twarz w obwódce",
+                    f"Zbieram próbki {zapisane}/{ile_potrzeba}",
+                    color="white",
+                )
                 QtCore.QTimer.singleShot(80, tick)
                 return
 
@@ -674,29 +682,64 @@ class MainWindow(QtWidgets.QMainWindow):
             self.last_face_bbox = (x, y, w, h)
             self.last_confidence = 100.0
 
-            if max(w, h) < CONFIG["face_min_size"]:
-                self.set_message("Podejdź bliżej", f"Zbieram próbki {zapisane}/{ile_potrzeba}", color="white")
+            # Bezpieczne przycięcie do granic klatki
+            h_img, w_img = szary.shape[:2]
+            x1 = max(0, int(x))
+            y1 = max(0, int(y))
+            x2 = min(int(x + w), w_img)
+            y2 = min(int(y + h), h_img)
+
+            if x2 <= x1 or y2 <= y1:
+                # detektor zwrócił coś poza kadrem – poczekaj na następną klatkę
+                self.set_message(
+                    "Przytrzymaj twarz w obwódce",
+                    f"Zbieram próbki {zapisane}/{ile_potrzeba}",
+                    color="white",
+                )
                 QtCore.QTimer.singleShot(80, tick)
                 return
 
-            roi_gray = szary[y:y + h, x:x + w]
-            roi_gray_resized = cv2.resize(roi_gray, (240, 240), interpolation=cv2.INTER_LINEAR)
+            if max(x2 - x1, y2 - y1) < CONFIG["face_min_size"]:
+                self.set_message(
+                    "Podejdź bliżej",
+                    f"Zbieram próbki {zapisane}/{ile_potrzeba}",
+                    color="white",
+                )
+                QtCore.QTimer.singleShot(80, tick)
+                return
+
+            roi_gray = szary[y1:y2, x1:x2]
+            if roi_gray.size == 0:
+                # dodatkowy bezpiecznik przed resize
+                QtCore.QTimer.singleShot(80, tick)
+                return
+
+            roi_gray_resized = cv2.resize(
+                roi_gray,
+                (240, 240),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
             ok, ostrosc, jasnosc = _face_quality(roi_gray_resized)
             if not ok:
                 self.set_message(
                     "Stań prosto, popraw światło",
                     f"ostrość {ostrosc:0.0f}, jasność {jasnosc:0.0f}  [{zapisane}/{ile_potrzeba}]",
-                    color="white"
+                    color="white",
                 )
                 QtCore.QTimer.singleShot(80, tick)
                 return
 
-            twarz_bgr = klatka[y:y + h, x:x + w].copy()
+            twarz_bgr = klatka[y1:y2, x1:x2].copy()
             twarz_bgr = cv2.resize(twarz_bgr, (240, 240), interpolation=cv2.INTER_LINEAR)
             lista_obrazow.append(twarz_bgr)
             zapisane += 1
 
-            self.set_message("Próbka zapisana", f"Zbieram próbki {zapisane}/{ile_potrzeba}", color="green")
+            self.set_message(
+                "Próbka zapisana",
+                f"Zbieram próbki {zapisane}/{ile_potrzeba}",
+                color="green",
+            )
 
             if zapisane >= ile_potrzeba:
                 self.facedb.add_three_shots(emp_id, lista_obrazow)
@@ -706,6 +749,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(120, tick)
 
         QtCore.QTimer.singleShot(80, tick)
+
 
     def training_start(self, post_action):
         """Uruchom reindeksację twarzy w osobnym wątku."""
@@ -739,35 +783,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if MongoClient is None or _MONGO_DISABLED:
             return
-
-        def worker():
-            global _MONGO_CLIENT, _MONGO_DISABLED
-            try:
-                if _MONGO_CLIENT is None:
-                    _MONGO_CLIENT = MongoClient(
-                        CONFIG.get("mongo_uri"),
-                        serverSelectionTimeoutMS=200,
-                        connectTimeoutMS=200,
-                        socketTimeoutMS=200,
-                    )
-                db = _MONGO_CLIENT[CONFIG.get("mongodb_db_name", "alkotester")]
-                col = db["entries"]
-                doc = {
-                    "datetime": ts,
-                    "employee_id": emp_id,
-                    "employee_name": emp_name,
-                    "employee_pin": emp_pin,
-                    "promille": float(promille),
-                    "result": "pass" if pass_ok else "deny",
-                    "fallback_pin": bool(self.fallback_pin_flag),
-                }
-                col.insert_one(doc)
-            except Exception as e:
-                print(f"[Mongo] wyłączam logowanie do Mongo po błędzie: {e}")
-                _MONGO_DISABLED = True
-
-        threading.Thread(target=worker, daemon=True).start()
-
 
         def worker():
             global _MONGO_CLIENT, _MONGO_DISABLED

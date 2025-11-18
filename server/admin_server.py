@@ -23,17 +23,13 @@ from collections import deque
 from datetime import datetime
 import json
 import os
+from typing import Dict, List, Any
 
 # Import Mongo client for logging to the database
 try:
     from pymongo import MongoClient  # type: ignore
 except Exception:
     MongoClient = None  # if PyMongo is unavailable we fall back to CSV only
-
-# Prosty globalny klient + flaga wyłączenia (żeby nie blokować GUI przy każdym logowaniu)
-_MONGO_CLIENT = None
-_MONGO_DISABLED = False
-
 
 from config import CONFIG
 
@@ -42,97 +38,92 @@ from config import CONFIG
 # ---------------------------------------------------------------------
 
 app = Flask(__name__)
-# W produkcji klucz powinien być losowy i trzymany poza repozytorium
+# W produkcji klucz powinien być losowy i trzymany poza repozytorium/ENV
 app.secret_key = "supersecretkey"
 
 # ---------------------------------------------------------------------
 # Mongo (opcjonalne)
 # ---------------------------------------------------------------------
 
-if MongoClient is not None:
-    _mongo_client = MongoClient(CONFIG.get("mongo_uri", "mongodb://localhost:27017"))
-    _mongo_db = _mongo_client[CONFIG.get("mongodb_db_name", "alkotester")]
-    _entries_collection = _mongo_db["entries"]
+if MongoClient is not None and CONFIG.get("mongo_uri"):
+    try:
+        _mongo_client = MongoClient(CONFIG.get("mongo_uri"))
+        _mongo_db = _mongo_client[CONFIG.get("mongodb_db_name", "alkotester")]
+        _entries_collection = _mongo_db["entries"]
+    except Exception:
+        _mongo_client = None
+        _mongo_db = None
+        _entries_collection = None
 else:
     _mongo_client = None
     _mongo_db = None
     _entries_collection = None
 
 # ---------------------------------------------------------------------
+# Ścieżki bazowe
+# ---------------------------------------------------------------------
+
+# katalog, w którym leży TEN plik (na Renderze: /opt/render/project/src/server)
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _employees_path() -> str:
+    """Zwróć absolutną ścieżkę do employees.json."""
+    emp_path = CONFIG.get("employees_json", "employees.json")
+    if not os.path.isabs(emp_path):
+        emp_path = os.path.join(_BASE_DIR, emp_path)
+    return emp_path
+
+
+def _logs_dir() -> str:
+    """Zwróć absolutną ścieżkę do katalogu z logami CSV."""
+    log_dir = CONFIG.get("logs_dir", "logs")
+    if not os.path.isabs(log_dir):
+        log_dir = os.path.join(_BASE_DIR, log_dir)
+    return log_dir
+
+
+# ---------------------------------------------------------------------
 # Proste cache w pamięci, żeby nie mielić tych samych plików non stop
 # ---------------------------------------------------------------------
 
-_EMP_CACHE = {
+_EMP_CACHE: Dict[str, Any] = {
     "mtime": 0.0,
     "map": {},  # employee_id -> pin
 }
 
-_CSV_CACHE = {
+_CSV_CACHE: Dict[str, Any] = {
     "mtime": 0.0,
     "entries": [],  # gotowa lista słowników dla schedule()
 }
-
-
-def _base_dir() -> str:
-    """Katalog główny projektu (jeden poziom wyżej niż plik admin_server.py)."""
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
 
 # ---------------------------------------------------------------------
 # PIN / ID helpers
 # ---------------------------------------------------------------------
 
-    def _generate_unique_pin() -> str:
-        """Generate a unique four-digit PIN not already present in employees.json."""
-        import random
 
-        existing_pins = set()
-        try:
-            emp_path = CONFIG["employees_json"]
-            if not os.path.isabs(emp_path):
-                emp_path = os.path.join(_base_dir(), emp_path)
-            with open(emp_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for emp in data.get("employees", []):
-                    pin = emp.get("pin")
-                    if pin:
-                        existing_pins.add(str(pin))
-        except Exception:
-            pass
+def _generate_unique_pin() -> str:
+    """Generate a unique four-digit PIN not already present in employees.json."""
+    import random
 
-        while True:
-            candidate = f"{random.randint(0, 9999):04d}"
-            if candidate not in existing_pins:
-                return candidate
+    existing_pins = set()
+    emp_path = _employees_path()
 
-    def worker():
-        global _MONGO_CLIENT, _MONGO_DISABLED
-        try:
-            if _MONGO_CLIENT is None:
-                _MONGO_CLIENT = MongoClient(
-                    CONFIG.get("mongo_uri", "mongodb://localhost:27017"),
-                    serverSelectionTimeoutMS=200,
-                    connectTimeoutMS=200,
-                    socketTimeoutMS=200,
-                )
-            db = _MONGO_CLIENT[CONFIG.get("mongodb_db_name", "alkotester")]
-            col = db["entries"]
-            doc = {
-                "datetime": ts,
-                "employee_id": emp_id,
-                "employee_name": emp_name,
-                "employee_pin": emp_pin,
-                "promille": float(promille),
-                "result": "pass" if pass_ok else "deny",
-                "fallback_pin": bool(self.fallback_pin_flag),
-            }
-            col.insert_one(doc)
-        except Exception as e:
-            print(f"[Mongo] wyłączam logowanie do Mongo po błędzie: {e}")
-            _MONGO_DISABLED = True
+    try:
+        with open(emp_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for emp in data.get("employees", []):
+            pin = emp.get("pin")
+            if pin:
+                existing_pins.add(str(pin))
+    except Exception:
+        # brak pliku / brak poprawnego JSON-a -> traktujemy jak brak istniejących PIN-ów
+        pass
 
-    threading.Thread(target=worker, daemon=True).start()
-
+    while True:
+        candidate = f"{random.randint(0, 9999):04d}"
+        if candidate not in existing_pins:
+            return candidate
 
 
 def _generate_next_emp_id() -> str:
@@ -141,19 +132,19 @@ def _generate_next_emp_id() -> str:
     Przeszukuje employees.json, bierze max(numer) + 1. Nienumeryczne ID są ignorowane.
     """
     ids = []
+    emp_path = _employees_path()
+
     try:
-        emp_path = CONFIG["employees_json"]
-        if not os.path.isabs(emp_path):
-            emp_path = os.path.join(_base_dir(), emp_path)
         with open(emp_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            for emp in data.get("employees", []):
-                try:
-                    ids.append(int(emp.get("id")))
-                except Exception:
-                    continue
+        for emp in data.get("employees", []):
+            try:
+                ids.append(int(emp.get("id")))
+            except Exception:
+                continue
     except Exception:
         pass
+
     return str(max(ids) + 1 if ids else 1)
 
 
@@ -161,16 +152,15 @@ def _generate_next_emp_id() -> str:
 # Cache helpers
 # ---------------------------------------------------------------------
 
-def _load_emp_pin_map() -> dict:
+
+def _load_emp_pin_map() -> Dict[str, str]:
     """
     Wczytaj employees.json do słownika {id -> pin} z prostym cache po mtime.
     Dzięki temu nie czytamy JSON-a setki razy przy każdym odświeżeniu.
     """
     global _EMP_CACHE
 
-    emp_path = CONFIG["employees_json"]
-    if not os.path.isabs(emp_path):
-        emp_path = os.path.join(_base_dir(), emp_path)
+    emp_path = _employees_path()
 
     try:
         mtime = os.path.getmtime(emp_path)
@@ -184,12 +174,12 @@ def _load_emp_pin_map() -> dict:
     try:
         with open(emp_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        m = {}
+        m: Dict[str, str] = {}
         for rec in data.get("employees", []):
             eid = str(rec.get("id"))
             epin = rec.get("pin")
             if eid and epin:
-                m[eid] = epin
+                m[eid] = str(epin)
         _EMP_CACHE = {"mtime": mtime, "map": m}
         return m
     except Exception:
@@ -233,7 +223,7 @@ def _auth_source_from_fallback(fallback_flag: int | bool) -> str:
     return "PIN (fallback)" if flag else "AI"
 
 
-def _load_entries_from_csv() -> list[dict]:
+def _load_entries_from_csv() -> List[Dict[str, Any]]:
     """
     Wczytaj logi z logs/measurements.csv z cache po mtime:
     - jeżeli CSV się nie zmienił → zwracamy gotowe entries z pamięci,
@@ -241,10 +231,7 @@ def _load_entries_from_csv() -> list[dict]:
     """
     global _CSV_CACHE
 
-    base = _base_dir()
-    log_dir = CONFIG.get("logs_dir", "logs")
-    if not os.path.isabs(log_dir):
-        log_dir = os.path.join(base, log_dir)
+    log_dir = _logs_dir()
     log_path = os.path.join(log_dir, "measurements.csv")
 
     try:
@@ -256,7 +243,7 @@ def _load_entries_from_csv() -> list[dict]:
     if _CSV_CACHE["mtime"] == mtime and _CSV_CACHE["entries"]:
         return _CSV_CACHE["entries"]
 
-    entries: list[dict] = []
+    entries: List[Dict[str, Any]] = []
     emp_pin_map = _load_emp_pin_map()
 
     try:
@@ -310,8 +297,17 @@ def _load_entries_from_csv() -> list[dict]:
 
 
 # ---------------------------------------------------------------------
-# Auth endpoints
+# Routes / Auth
 # ---------------------------------------------------------------------
+
+
+@app.route("/")
+def index():
+    """Przekieruj root na /login lub /schedule w zależności od sesji."""
+    if session.get("logged_in"):
+        return redirect(url_for("schedule"))
+    return redirect(url_for("login"))
+
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -346,6 +342,7 @@ def _ensure_logged_in() -> bool:
 # Główny widok harmonogramu
 # ---------------------------------------------------------------------
 
+
 @app.route("/schedule", methods=["GET"])
 def schedule():
     """
@@ -365,7 +362,7 @@ def schedule():
     else:
         info = session.pop("info", None)
 
-    entries: list[dict] = []
+    entries: List[Dict[str, Any]] = []
 
     # 1) Próba z MongoDB (jeśli jest dostępny + podłączony)
     if _entries_collection is not None:
@@ -415,6 +412,7 @@ def schedule():
 # Dodawanie pracownika
 # ---------------------------------------------------------------------
 
+
 @app.route("/add_employee", methods=["POST"])
 def add_employee():
     """
@@ -436,9 +434,7 @@ def add_employee():
     new_id = _generate_next_emp_id()
 
     # Wczytaj / zainicjuj strukturę employees.json
-    emp_path = CONFIG["employees_json"]
-    if not os.path.isabs(emp_path):
-        emp_path = os.path.join(_base_dir(), emp_path)
+    emp_path = _employees_path()
 
     try:
         with open(emp_path, "r", encoding="utf-8") as f:
@@ -451,10 +447,14 @@ def add_employee():
     employees.append({"id": new_id, "name": full_name, "pin": new_pin})
     data["employees"] = employees
 
+    # Upewnij się, że katalog istnieje
+    os.makedirs(os.path.dirname(emp_path), exist_ok=True)
+
     try:
         with open(emp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
+        # w razie błędu zapisu nie wywalamy 500 – po prostu brak efektu
         pass
 
     # Inwaliduj cache employees po zapisie
@@ -466,17 +466,19 @@ def add_employee():
 
 
 # ---------------------------------------------------------------------
-# Uruchamianie serwera
+# Uruchamianie serwera lokalnie (np. do debugowania)
 # ---------------------------------------------------------------------
+
 
 def run_server():
     """
     Start HTTP admin server.
 
-    Port można nadpisać w CONFIG["admin_port"].
-    Brak SSL; prosty tryb HTTP do LAN.
+    Lokalne uruchomienie: python admin_server.py
+    W środowisku typu Render zwykle używamy gunicorn: gunicorn admin_server:app
     """
-    port = int(CONFIG.get("admin_port", 80))
+    # Na platformach typu Render port jest podawany w env PORT
+    port = int(os.environ.get("PORT", CONFIG.get("admin_port", 8000)))
     app.run(
         host="0.0.0.0",
         port=port,
