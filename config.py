@@ -111,6 +111,5 @@ CONFIG = {
 
     # Port na którym będzie nasłuchiwał panel administratora HTTP.
     # Domyślnie używany w run_server() jeśli nie zostanie podany.
-    "admin_port": 5000,
-
+    "admin_port": 80,
 }

@@ -275,6 +275,9 @@ _SCHEDULE_TEMPLATE = """
 </head>
 <body>
     <h1>Harmonogram wejść pracowników</h1>
+    {% if info %}
+    <p style="color: green; font-weight: bold;">{{ info }}</p>
+    {% endif %}
     <table>
         <thead>
             <tr>
