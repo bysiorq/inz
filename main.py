@@ -219,7 +219,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Timer okresowego sync-a (np. co 10 minut)
         self.sync_timer = QtCore.QTimer(self)
         self.sync_timer.timeout.connect(self.on_sync_tick)
-        self.sync_timer.start(10 * 60 * 1000)  # 10 minut
+        self.sync_timer.start(1 * 60 * 1000)  # 10 minut
 
         # Obsługa przycisków
         self.btn_primary.clicked.connect(self.on_btn_primary)
