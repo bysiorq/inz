@@ -1,17 +1,17 @@
 import os
+import os.path
+
+BASE_DIR = os.path.dirname(__file__)
 
 CONFIG = {
-    "admin_username": "admin",
-    "admin_password": "jakies_silne_haslo",
+    "admin_username": os.environ.get("ADMIN_USERNAME", "admin"),
+    "admin_password": os.environ.get("ADMIN_PASSWORD", "admin"),
 
-    # URI i DB nazwa z env (ustawisz w Render)
     "mongo_uri": os.environ.get("MONGO_URI", ""),
     "mongodb_db_name": os.environ.get("MONGODB_DB_NAME", "alkotester"),
 
-    # ścieżki lokalne na serwerze
-    "employees_json": os.path.join(os.path.dirname(__file__), "employees.json"),
-    "logs_dir": os.path.join(os.path.dirname(__file__), "logs"),
+    "employees_json": os.path.join(BASE_DIR, "employees.json"),
+    "logs_dir": os.path.join(BASE_DIR, "logs"),
 
-    # na Render i tak nie używane, ale może zostać:
     "admin_port": 80,
 }
