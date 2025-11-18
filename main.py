@@ -827,10 +827,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 if _MONGO_CLIENT is None:
                     _MONGO_CLIENT = MongoClient(
                         CONFIG.get("mongo_uri"),
-                        serverSelectionTimeoutMS=200,
-                        connectTimeoutMS=200,
-                        socketTimeoutMS=200,
+                        serverSelectionTimeoutMS=5000,  # 5 s na znalezienie primary
+                        connectTimeoutMS=5000,
+                        socketTimeoutMS=5000,
                     )
+
                 db = _MONGO_CLIENT[CONFIG.get("mongodb_db_name", "alkotester")]
                 col = db["entries"]
                 doc = {
@@ -848,6 +849,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 _MONGO_DISABLED = True
 
         threading.Thread(target=worker, daemon=True).start()
+
 
 
     # ----- bramka + logi -----
