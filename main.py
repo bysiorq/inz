@@ -539,7 +539,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_btn_secondary(self):
         if self.state == "RETRY":
             # Odmowa w stanie RETRY
-            self.set_message("Odmowa", "", color="red")
+            self.set_message(tekst_pomiar,"Odmowa", color="red")
             self.trigger_gate_and_log(False, self.last_promille)
             self.show_buttons(primary_text=None, secondary_text=None)
             QtCore.QTimer.singleShot(2000, self.enter_idle)

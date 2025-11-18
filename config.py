@@ -57,13 +57,13 @@ CONFIG = {
     "quality_max_brightness": 210.0,
 
     # --- rozpoznawanie (anty-false-positive)
-    "recognition_min_match": 55,
-    "recognition_ratio_thresh": 0.85,
+    "recognition_min_match": 65,
+    "recognition_ratio_thresh": 0.75,
     "recognition_min_margin": 10,
-    "recognition_stable_ticks": 1,
+    "recognition_stable_ticks": 2,
 
     # --- on-line uczenie twarzy ---
-    "online_max_samples_per_emp": 20,
+    "online_max_samples_per_emp": 40,
 
     # MQ-3 / MCP3008
     "spi_bus": 0,
@@ -74,8 +74,8 @@ CONFIG = {
     "measure_seconds": 3.0,
 
     # progi decyzji [‰]
-    "threshold_pass": 0.00,
-    "threshold_deny": 0.50,
+    "threshold_pass": 0.000,
+    "threshold_deny": 0.900,
 
     # przekaźnik bramki
     "gate_gpio": 18,

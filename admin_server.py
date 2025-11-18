@@ -18,6 +18,10 @@ assigned and appends the new record to the employees JSON file.
 """
 
 from flask import Flask, request, redirect, url_for, session, render_template_string
+
+# Additional imports for improved performance and formatting
+from collections import deque
+from datetime import datetime
 import json
 import os
 # Try to import pymongo; if unavailable, use a fallback to CSV logs.
@@ -121,37 +125,84 @@ def schedule():
     """Render the table of employee entry logs and the employee creation form."""
     if not _ensure_logged_in():
         return redirect(url_for("login"))
-    # Fetch the latest 500 entries sorted descending by datetime
-    entries = []
-    # Primary source: MongoDB
+    # Obsłuż parametry GET po dodaniu pracownika.  Jeżeli występują, wyświetl
+    # komunikat o nowym pracowniku i przydzielonym PIN-ie; w przeciwnym razie
+    # pobierz ewentualny komunikat z sesji (jednorazowy).
+    new_pin = request.args.get("new_pin")
+    emp_name = request.args.get("emp_name")
+    if new_pin and emp_name:
+        info = f"Dodano pracownika {emp_name}. PIN: {new_pin}"
+    else:
+        info = session.pop("info", None)
+
+    entries: list[dict] = []
+    # Spróbuj pobrać logi z MongoDB
     if _entries_collection is not None:
         try:
             cursor = _entries_collection.find().sort("datetime", -1).limit(500)
-            entries = list(cursor)
+            raw_entries = list(cursor)
+            for doc in raw_entries:
+                pin = doc.get("employee_pin")
+                name = doc.get("employee_name")
+                prom_val = doc.get("promille")
+                dt_str = doc.get("datetime")
+                # Sformatuj datę do bardziej czytelnej postaci
+                try:
+                    dt_obj = datetime.fromisoformat(dt_str)
+                    dt_fmt = dt_obj.strftime("%d.%m.%Y %H:%M:%S")
+                except Exception:
+                    dt_fmt = dt_str
+                # Oblicz wynik decyzji na podstawie promili i progów z konfiguracji
+                result = ""
+                try:
+                    pr = float(prom_val)
+                    if pr >= CONFIG.get("threshold_deny", 0.5):
+                        result = "Odmowa"
+                    elif pr <= CONFIG.get("threshold_pass", 0.0):
+                        result = "Przepuszczony"
+                    else:
+                        result = "Ponów"
+                except Exception:
+                    result = ""
+                entries.append({
+                    "employee_pin": pin,
+                    "employee_name": name,
+                    "promille": prom_val,
+                    "datetime": dt_fmt,
+                    "result": result,
+                })
         except Exception:
             entries = []
-    # Fallback: read from local CSV log if no entries were found in MongoDB
+    # Jeżeli w bazie nic nie ma lub wystąpił błąd, czytaj plik CSV
     if not entries:
         try:
-            # Path to measurements log
-            log_path = os.path.join(CONFIG.get("logs_dir", "logs"), "measurements.csv")
+            # Bazowy katalog projektu (jeden poziom wyżej niż katalog alkotester)
+            base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            log_dir = CONFIG.get("logs_dir", "logs")
+            if not os.path.isabs(log_dir):
+                log_dir = os.path.join(base, log_dir)
+            log_path = os.path.join(log_dir, "measurements.csv")
+            # Czytaj tylko ostatnie 500 wierszy dla wydajności
             with open(log_path, "r", encoding="utf-8") as f:
-                lines = f.read().strip().splitlines()
-            if lines:
-                header = lines[0].split(";")
-                # Expecting columns: datetime;employee_name;employee_id;promille;fallback_pin
-                for row in lines[1:]:
-                    cols = row.split(";")
+                last_lines = deque(f, maxlen=501)
+            last_lines = list(last_lines)
+            if last_lines:
+                # Pomijamy pierwszy wiersz z nagłówkami, jeśli istnieje
+                for row in last_lines[1:]:
+                    cols = row.strip().split(";")
                     if len(cols) < 4:
                         continue
                     ts = cols[0]
-                    emp_name = cols[1]
+                    name = cols[1]
                     emp_id = cols[2]
-                    prom = cols[3]
-                    # Determine PIN from employees.json if possible
+                    prom_str = cols[3]
+                    # Ustal pin na podstawie employees.json
                     emp_pin = None
                     try:
-                        with open(CONFIG["employees_json"], "r", encoding="utf-8") as f_emp:
+                        emp_path = CONFIG["employees_json"]
+                        if not os.path.isabs(emp_path):
+                            emp_path = os.path.join(base, emp_path)
+                        with open(emp_path, "r", encoding="utf-8") as f_emp:
                             data_emp = json.load(f_emp)
                             for rec in data_emp.get("employees", []):
                                 if str(rec.get("id")) == str(emp_id):
@@ -159,19 +210,38 @@ def schedule():
                                     break
                     except Exception:
                         emp_pin = None
+                    # Konwersja promili na liczbę zmiennoprzecinkową
                     try:
-                        prom_val = float(prom.replace(",", "."))
+                        prom = float(prom_str.replace(",", "."))
                     except Exception:
-                        prom_val = 0.0
+                        prom = 0.0
+                    # Format daty
+                    try:
+                        dt_obj = datetime.fromisoformat(ts)
+                        dt_fmt = dt_obj.strftime("%d.%m.%Y %H:%M:%S")
+                    except Exception:
+                        dt_fmt = ts
+                    # Wyznacz rezultat na podstawie progów
+                    result = ""
+                    try:
+                        if prom >= CONFIG.get("threshold_deny", 0.5):
+                            result = "Odmowa"
+                        elif prom <= CONFIG.get("threshold_pass", 0.0):
+                            result = "Przepuszczony"
+                        else:
+                            result = "Ponów"
+                    except Exception:
+                        result = ""
                     entries.append({
                         "employee_pin": emp_pin,
-                        "employee_name": emp_name,
-                        "promille": prom_val,
-                        "datetime": ts,
+                        "employee_name": name,
+                        "promille": prom,
+                        "datetime": dt_fmt,
+                        "result": result,
                     })
         except Exception:
             entries = []
-    return render_template_string(_SCHEDULE_TEMPLATE, entries=entries)
+    return render_template_string(_SCHEDULE_TEMPLATE, entries=entries, info=info)
 
 
 @app.route("/add_employee", methods=["POST"])
@@ -207,7 +277,9 @@ def add_employee():
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
-    return redirect(url_for("schedule"))
+    # Po dodaniu pracownika przekieruj do harmonogramu z numerem PIN i nazwą jako parametry GET,
+    # aby administrator mógł zobaczyć przydzielony kod.
+    return redirect(url_for("schedule", new_pin=new_pin, emp_name=full_name))
 
 
 def run_server():
@@ -217,11 +289,13 @@ def run_server():
     If you wish to run on a different port you can override it by
     adding an ``admin_port`` entry to the ``CONFIG`` dictionary.
     """
-    # Bind to all interfaces to allow LAN access.  If an explicit port
-    # is provided in CONFIG use that, otherwise default to 80.  Do not
-    # provide an SSL context here to avoid HTTPS.
+    # Bind to all interfaces to allow LAN access.  Jeśli w konfiguracji
+    # podano port, użyj go; w przeciwnym razie skorzystaj z 80.  Praca w
+    # trybie wielowątkowym (threaded=True) zapobiega blokowaniu pętli GUI,
+    # a wyłączenie reloadera (use_reloader=False) zmniejsza narzut CPU.
     port = int(CONFIG.get("admin_port", 80))
-    app.run(host="0.0.0.0", port=port, ssl_context=None, debug=False)
+    app.run(host="0.0.0.0", port=port, ssl_context=None, debug=False,
+            threaded=True, use_reloader=False)
 
 
 # Minimal HTML templates defined as module constants.  These could be
@@ -286,6 +360,7 @@ _SCHEDULE_TEMPLATE = """
                 <th>Nazwisko</th>
                 <th>Promil [‰]</th>
                 <th>Godzina</th>
+                <th>Wynik</th>
             </tr>
         </thead>
         <tbody>
@@ -296,6 +371,7 @@ _SCHEDULE_TEMPLATE = """
                 <td>{{ (entry.employee_name.split(' ', 1)[1] if entry.employee_name and ' ' in entry.employee_name else '') }}</td>
                 <td>{{ '%.3f'|format(entry.promille) }}</td>
                 <td>{{ entry.datetime }}</td>
+                <td>{{ entry.result }}</td>
             </tr>
         {% endfor %}
         </tbody>
