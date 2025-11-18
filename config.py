@@ -50,7 +50,7 @@ CONFIG = {
     "detect_retry_limit": 3,
 
     # --- jakość próbek treningowych po PIN
-    "train_required_shots": 7,
+    "train_required_shots": 10,
     "train_timeout_sec": 15,
     "quality_min_sharpness": 60.0,
     "quality_min_brightness": 40.0,
@@ -105,7 +105,9 @@ CONFIG = {
     "mongodb_db_name": "alkotester",
 
 
-    "mongo_uri": "mongodb+srv://user:pass@cluster0-xxx.mongodb.net/alkotester?retryWrites=true&w=majority",
+
+
+    "mongo_uri": "mongodb+srv://kamilox123000_db_user:<TWOJE_NOWE_HASLO>@alkotesterdb.bfua4dg.mongodb.net/alkotester?retryWrites=true&w=majority&appName=AlkotesterDB",
     "mongodb_db_name": "alkotester",
 
     # Port na którym będzie nasłuchiwał panel administratora HTTP.

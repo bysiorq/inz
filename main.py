@@ -37,11 +37,11 @@ from keypad import KeypadDialog
 try:
     from pymongo import MongoClient  # type: ignore
 except Exception:
-    MongoClient = None  # if PyMongo is unavailable we fall back to CSV only
+    MongoClient = None
 
-# ---- NOWE: lekki, współdzielony klient Mongo na RasPi ----
 _MONGO_CLIENT = None
 _MONGO_DISABLED = False
+
 
 
 def _face_quality(szare_roi):
@@ -735,16 +735,39 @@ class MainWindow(QtWidgets.QMainWindow):
             self.enter_detect()
 
     def _log_to_mongo_async(self, ts, emp_id, emp_name, emp_pin, promille, pass_ok: bool):
-        """
-        Lekki logger do Mongo w tle:
-        - bardzo krótkie timeouty,
-        - jeśli raz się wywali -> wyłącza się na stałe (_MONGO_DISABLED = True),
-        - ZERO blokowania GUI / FSM (działa w osobnym wątku).
-        """
         global _MONGO_CLIENT, _MONGO_DISABLED
 
         if MongoClient is None or _MONGO_DISABLED:
             return
+
+        def worker():
+            global _MONGO_CLIENT, _MONGO_DISABLED
+            try:
+                if _MONGO_CLIENT is None:
+                    _MONGO_CLIENT = MongoClient(
+                        CONFIG.get("mongo_uri"),
+                        serverSelectionTimeoutMS=200,
+                        connectTimeoutMS=200,
+                        socketTimeoutMS=200,
+                    )
+                db = _MONGO_CLIENT[CONFIG.get("mongodb_db_name", "alkotester")]
+                col = db["entries"]
+                doc = {
+                    "datetime": ts,
+                    "employee_id": emp_id,
+                    "employee_name": emp_name,
+                    "employee_pin": emp_pin,
+                    "promille": float(promille),
+                    "result": "pass" if pass_ok else "deny",
+                    "fallback_pin": bool(self.fallback_pin_flag),
+                }
+                col.insert_one(doc)
+            except Exception as e:
+                print(f"[Mongo] wyłączam logowanie do Mongo po błędzie: {e}")
+                _MONGO_DISABLED = True
+
+        threading.Thread(target=worker, daemon=True).start()
+
 
         def worker():
             global _MONGO_CLIENT, _MONGO_DISABLED
@@ -810,7 +833,6 @@ class MainWindow(QtWidgets.QMainWindow):
             [ts, emp_name, emp_id, f"{promille:.3f}", int(self.fallback_pin_flag)]
         )
 
-        # Mongo – tylko jeżeli dostępne, w tle
         emp_pin = None
         try:
             entry = self.facedb.emp_by_id.get(self.current_emp_id or "")
@@ -820,6 +842,7 @@ class MainWindow(QtWidgets.QMainWindow):
             emp_pin = None
 
         self._log_to_mongo_async(ts, emp_id, emp_name, emp_pin, promille, pass_ok)
+
 
 
     # ----- Helpery preview -----
