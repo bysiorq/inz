@@ -1,23 +1,4 @@
-"""
-Simple administrator web server for the breathalyzer system.
-
-This module starts a Flask-based HTTP server which provides a minimal
-admin panel. The panel allows an authorised administrator to log in,
-view a table of employee entry measurements and add new employees to
-the local JSON database. All traffic is served over plain HTTP and
-does not require any SSL certificates.
-
-If the pymongo library is installed the server persists measurement logs
-to a MongoDB instance. Records include the employee's identifier, pin,
-full name, recorded BAC and the timestamp of the measurement. When
-pymongo is unavailable the schedule is populated from the local CSV logs.
-The admin panel renders these records in a simple HTML table and
-exposes a form for adding new employees. When a new employee is created
-the system generates a unique four-digit pin which has not previously been
-assigned and appends the new record to the employees JSON file.
-"""
-
-from flask import Flask, request, redirect, url_for, session, render_template_string
+from flask import Flask, request, redirect, url_for, session, render_template_string, jsonify
 
 from collections import deque
 from datetime import datetime
@@ -60,10 +41,9 @@ else:
     _entries_collection = None
 
 # ---------------------------------------------------------------------
-# Ścieżki bazowe
+# Ścieżki bazowe (na Renderze: katalog z admin_server.py)
 # ---------------------------------------------------------------------
 
-# katalog, w którym leży TEN plik (na Renderze: /opt/render/project/src/server)
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -117,7 +97,6 @@ def _generate_unique_pin() -> str:
             if pin:
                 existing_pins.add(str(pin))
     except Exception:
-        # brak pliku / brak poprawnego JSON-a -> traktujemy jak brak istniejących PIN-ów
         pass
 
     while True:
@@ -339,6 +318,32 @@ def _ensure_logged_in() -> bool:
 
 
 # ---------------------------------------------------------------------
+# API dla Raspberry Pi – master employees.json
+# ---------------------------------------------------------------------
+
+
+@app.route("/api/employees_public", methods=["GET"])
+def api_employees_public():
+    """
+    Publiczny endpoint dla RPi z prostą ochroną tokenem:
+    /api/employees_public?token=SYNC_TOKEN
+    """
+    expected = CONFIG.get("sync_token")
+    if expected:
+        token = request.args.get("token")
+        if token != expected:
+            return "Forbidden", 403
+
+    emp_path = _employees_path()
+    try:
+        with open(emp_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {"employees": []}
+    return jsonify(data)
+
+
+# ---------------------------------------------------------------------
 # Główny widok harmonogramu
 # ---------------------------------------------------------------------
 
@@ -447,14 +452,15 @@ def add_employee():
     employees.append({"id": new_id, "name": full_name, "pin": new_pin})
     data["employees"] = employees
 
-    # Upewnij się, że katalog istnieje
-    os.makedirs(os.path.dirname(emp_path), exist_ok=True)
+    # Upewnij się, że katalog istnieje (tylko jeśli jest niepusty)
+    dirpath = os.path.dirname(emp_path)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
 
     try:
         with open(emp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
-        # w razie błędu zapisu nie wywalamy 500 – po prostu brak efektu
         pass
 
     # Inwaliduj cache employees po zapisie
@@ -477,7 +483,6 @@ def run_server():
     Lokalne uruchomienie: python admin_server.py
     W środowisku typu Render zwykle używamy gunicorn: gunicorn admin_server:app
     """
-    # Na platformach typu Render port jest podawany w env PORT
     port = int(os.environ.get("PORT", CONFIG.get("admin_port", 8000)))
     app.run(
         host="0.0.0.0",

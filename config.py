@@ -1,35 +1,19 @@
 """
 Konfiguracja aplikacji Alkotester.
 
-Plik ten zawiera wszystkie parametry konfiguracyjne wykorzystywane przez
-główną aplikację, system rozpoznawania twarzy, obsługę kamery oraz
-dodatkowy serwer administracyjny.  Pola definiujące widoczność
-ekranu, parametry czujnika MQ‑3, progi decyzyjne itp. nie powinny
-być modyfikowane bez zrozumienia konsekwencji dla działania
-urządzenia.
+Ta wersja jest dla Raspberry Pi (urządzenie). Panel admina siedzi na Render,
+ale urządzenie nadal trzyma lokalne pliki: employees.json + logs/*.
 """
 
-# Podstawowa konfiguracja urządzenia
 CONFIG = {
-    # fizyczna rozdziałka panelu DSI (pionowo)
+    # --- ekran / UI ---
     "screen_width": 720,
     "screen_height": 1280,
-
-    # pasek z komunikatem + przyciskami na dole
     "overlay_height_px": 220,
-
-    # tryb kiosk – zawsze w trybie pełnoekranowym
     "fullscreen": True,
-    # na produkcji można dać True, aby ukryć mysz
     "hide_cursor": True,
 
-    # Kamera:
-    # capture w landscape (1280x720),
-    # rotate_dir obraca numpy:
-    #   "cw"   = 90° w prawo (portret)
-    #   "ccw"  = 90° w lewo
-    #   "180"  = do góry nogami
-    #   "none" = bez obrotu (poziomo)
+    # --- kamera ---
     "camera_main_size": (1280, 720),  # (W,H) z sensora
     "camera_fps": 10,
     "rotate_dir": "cw",
@@ -39,24 +23,23 @@ CONFIG = {
     "yunet_nms_thresh": 0.3,
     "yunet_top_k": 5000,
 
-    # --- rozpoznawanie twarzy
+    # --- rozpoznawanie twarzy ---
     "face_detect_interval_ms": 1000,
     "face_min_size": 120,
     "recognition_conf_ok": 55.0,
     "recognition_conf_low": 20.0,
 
-    # próby w DETECT / DETECT_RETRY
     "detect_fail_limit": 5,
     "detect_retry_limit": 3,
 
-    # --- jakość próbek treningowych po PIN
+    # --- jakość próbek treningowych po PIN ---
     "train_required_shots": 10,
     "train_timeout_sec": 15,
     "quality_min_sharpness": 60.0,
     "quality_min_brightness": 40.0,
     "quality_max_brightness": 210.0,
 
-    # --- rozpoznawanie (anty-false-positive)
+    # --- anty-false-positive ---
     "recognition_min_match": 65,
     "recognition_ratio_thresh": 0.75,
     "recognition_min_margin": 10,
@@ -65,7 +48,7 @@ CONFIG = {
     # --- on-line uczenie twarzy ---
     "online_max_samples_per_emp": 40,
 
-    # MQ-3 / MCP3008
+    # --- MQ-3 / MCP3008 ---
     "spi_bus": 0,
     "spi_device": 0,
     "mq3_channel": 0,
@@ -73,44 +56,42 @@ CONFIG = {
     "promille_scale": 220.0,
     "measure_seconds": 5.0,
 
-    # progi decyzji [‰]
-    "threshold_pass": 0.002,
-    "threshold_deny": 0.001,
+    # --- progi decyzji [‰] ---
+    "threshold_pass": 0.000,
+    "threshold_deny": 0.2,
 
-    # przekaźnik bramki
+    # --- przekaźnik bramki ---
     "gate_gpio": 18,
     "gate_pulse_sec": 5.0,
 
-    # pliki danych
+    # --- pliki danych na RPi ---
     "data_dir": "data",
     "faces_dir": "data/faces",
     "index_dir": "data/index",
     "employees_json": "data/employees.json",
     "logs_dir": "logs",
 
-    # pracownik testowy żeby baza nie była pusta
+    # --- pracownik testowy ---
     "bootstrap_employee": {
         "id": "1",
         "name": "Kamil Karolak",
         "pin": "0000",
     },
 
-    # --- ustawienia panelu administratora ---
-    # dane logowania (w prawdziwym systemie należy zmienić na własne)
+    # --- logowanie do panelu admina (tylko dla /login na serwerze) ---
     "admin_username": "admin",
     "admin_password": "admin123",
 
-    # MongoDB – URI i nazwa bazy danych dla logów
-    "mongo_uri": "mongodb://localhost:27017",
-    "mongodb_db_name": "alkotester",
-
-
-
-
+    # --- MongoDB Atlas: logi pomiarów ---
+    # UZUPEŁNIJ PRAWIDŁOWE HASŁO ZMIENIAJĄC <TWOJE_NOWE_HASLO>
     "mongo_uri": "mongodb+srv://kamilox123000_db_user:<TWOJE_NOWE_HASLO>@alkotesterdb.bfua4dg.mongodb.net/alkotester?retryWrites=true&w=majority&appName=AlkotesterDB",
     "mongodb_db_name": "alkotester",
 
-    # Port na którym będzie nasłuchiwał panel administratora HTTP.
-    # Domyślnie używany w run_server() jeśli nie zostanie podany.
+    # --- adres panelu na Render (master) ---
+    # użyjesz tego później, jeśli zrobimy synchronizację employees.json po HTTP
+    "server_base_url": "https://inz-di1v.onrender.com",
+    "sync_token": "admin123",
+
+    # Port dla lokalnego serwera admina (jeśli kiedyś włączysz na RPi)
     "admin_port": 5000,
 }

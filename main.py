@@ -8,8 +8,8 @@ Ten moduł odpowiada za obsługę cyklu życia urządzenia: inicjalizację
 interfejsu graficznego, przechwytywanie obrazu z kamery, detekcję
 twarzy, zbieranie próbek wdychania alkoholu, podejmowanie decyzji
 o udzieleniu dostępu oraz rejestrowanie zdarzeń.  Dodatkowo w wątku
- pobocznym uruchamiany jest prosty serwer HTTP, który umożliwia
- administratorowi przeglądanie logów i dodawanie nowych pracowników.
+pobocznym uruchamiany jest prosty serwer HTTP, który umożliwia
+administratorowi przeglądanie logów i dodawanie nowych pracowników.
 """
 
 import os
@@ -18,6 +18,8 @@ import cv2
 import time
 import signal
 import threading
+import json
+import requests
 import numpy as np
 from datetime import datetime
 
@@ -31,9 +33,6 @@ from facedb import FaceDB
 from camera_manager import CameraManager
 from keypad import KeypadDialog
 
-# Import admin_server to start the web interface in a separate thread
-# import admin_server
-
 try:
     from pymongo import MongoClient  # type: ignore
 except Exception:
@@ -41,7 +40,6 @@ except Exception:
 
 _MONGO_CLIENT = None
 _MONGO_DISABLED = False
-
 
 
 def _face_quality(szare_roi):
@@ -91,6 +89,12 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         boot = CONFIG["bootstrap_employee"]
         self.facedb.ensure_employee_exists(boot["id"], boot["name"], boot["pin"])
+
+        # Synchronizacja employees.json z serwera master (Render)
+        try:
+            self.sync_employees_from_server()
+        except Exception as e:
+            print(f"[SYNC] Błąd sync przy starcie: {e}")
 
         self.setWindowTitle("Alkotester – Raspberry Pi")
 
@@ -155,7 +159,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Dane aktualnego pracownika
         self.current_emp_id = None
-        self.current_emp_name = None
+        my_curr_name = None
+        self.current_emp_name = my_curr_name
 
         # Flaga dopuszczenia po PIN
         self.fallback_pin_flag = False
@@ -211,6 +216,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.measure_timer = QtCore.QTimer(self)
         self.measure_timer.timeout.connect(self.on_measure_tick)
 
+        # Timer okresowego sync-a (np. co 10 minut)
+        self.sync_timer = QtCore.QTimer(self)
+        self.sync_timer.timeout.connect(self.on_sync_tick)
+        self.sync_timer.start(10 * 60 * 1000)  # 10 minut
+
         # Obsługa przycisków
         self.btn_primary.clicked.connect(self.on_btn_primary)
         self.btn_secondary.clicked.connect(self.on_btn_secondary)
@@ -225,6 +235,62 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Rozpocznij kalibrację MQ-3
         self._calibrate_mq3_start()
+
+    # --- SYNC employees.json z masterem na Renderze ---
+
+    def sync_employees_from_server(self):
+        """
+        Pobierz aktualną listę pracowników z serwera (Render master)
+        i zapisz jako lokalne employees.json, potem przeładuj FaceDB.
+        """
+        base_url = CONFIG.get("server_base_url")
+        token = CONFIG.get("sync_token")
+        employees_path = CONFIG.get("employees_json")
+
+        if not base_url:
+            print("[SYNC] Brak server_base_url w CONFIG – pomijam sync.")
+            return
+
+        url = f"{base_url.rstrip('/')}/api/employees_public"
+        params = {}
+        if token:
+            params["token"] = token
+
+        try:
+            print(f"[SYNC] Pobieram pracowników z {url} ...")
+            resp = requests.get(url, params=params, timeout=3)
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict):
+                print("[SYNC] Odpowiedź nie jest dict-em – pomijam.")
+                return
+
+            employees = data.get("employees", [])
+            data_to_save = {"employees": employees}
+
+            os.makedirs(os.path.dirname(employees_path), exist_ok=True)
+            with open(employees_path, "w", encoding="utf-8") as f:
+                json.dump(data_to_save, f, ensure_ascii=False, indent=2)
+
+            print(f"[SYNC] Zapisano {len(employees)} pracowników do {employees_path}")
+
+            try:
+                self.facedb._load_employees()
+                print("[SYNC] FaceDB przeładowany.")
+            except Exception as e:
+                print(f"[SYNC] Błąd przeładowania FaceDB: {e}")
+
+        except Exception as e:
+            print(f"[SYNC] Błąd pobierania z serwera: {e}")
+
+    def on_sync_tick(self):
+        """Okresowy sync z masterem."""
+        try:
+            self.sync_employees_from_server()
+        except Exception as e:
+            print(f"[SYNC] Błąd okresowego sync-a: {e}")
+
+    # ----- Pomocnicze: timery, napisy -----
 
     def _stop_timer(self, timer_obj: QtCore.QTimer):
         """Zatrzymaj timer jeżeli jest aktywny."""
@@ -327,7 +393,6 @@ class MainWindow(QtWidgets.QMainWindow):
         dlg = KeypadDialog(self, title="Wprowadź PIN")
         if dlg.exec() == QtWidgets.QDialog.Accepted:
             pin = dlg.value()
-            # Wczytaj aktualną bazę pracowników na wypadek modyfikacji przez panel admina
             try:
                 self.facedb._load_employees()
             except Exception:
@@ -364,36 +429,22 @@ class MainWindow(QtWidgets.QMainWindow):
     def enter_identified_wait(self):
         """
         Przejście do stanu oczekiwania przed pomiarem.
-
-        Po rozpoznaniu twarzy (lub po zatwierdzeniu PIN-u) rozpoczyna się
-        odliczanie do pomiaru. W tym czasie kamera pozostaje aktywna, aby
-        upewnić się, że twarz pozostaje w kadrze i znajduje się wystarczająco
-        blisko. Gdy licznik dojdzie do zera, na podstawie zebranych
-        informacji podejmowana jest decyzja o przejściu do pomiaru lub
-        powrocie do stanu DETECT.
         """
         self.state = "IDENTIFIED_WAIT"
-        # Odliczamy od 5 w dół
         self.identified_seconds_left = 5
 
-        # Zresetuj detekcję twarzy / kalibrację
         self.calibrate_good_face = False
         self.calibrate_seen_face = False
 
-        # Nie resetuj self.last_face_bbox ani confidence – chcemy widzieć ramkę
-        # Włącz detekcję twarzy podczas odliczania
         self.face_timer.start(CONFIG["face_detect_interval_ms"])
 
-        # Zatrzymaj inne timery
         self._stop_timer(self.ui_timer)
         self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
         self._stop_timer(self.identified_timer)
 
-        # Uruchom timer, który będzie wywoływał on_identified_tick co sekundę
         self.identified_timer.start(1000)
 
-        # Pokaż komunikat: odliczanie na górze, przywitanie na dole
         tekst_gora = f"Za {self.identified_seconds_left} s zaczynamy pomiar"
         tekst_srodek = f"Cześć {self.current_emp_name or ''}"
         self.set_message(tekst_gora, tekst_srodek, color="white")
@@ -431,13 +482,10 @@ class MainWindow(QtWidgets.QMainWindow):
         promille = getattr(self, "_pending_promille", 0.0)
         self.enter_decide(promille)
 
-
     def enter_decide(self, promille):
         """Podejmij decyzję na podstawie wyniku pomiaru."""
-        # Upewnij się, że mamy float
         self.last_promille = float(promille)
 
-        # Wczytaj progi jako liczby zmiennoprzecinkowe
         try:
             thr_pass = float(CONFIG.get("threshold_pass", 0.0))
         except Exception:
@@ -447,7 +495,6 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             thr_deny = 0.5
 
-        # tylko zamieniamy miejscami i logujemy ostrzeżenie.
         if thr_pass > thr_deny:
             print(
                 f"[WARN] threshold_pass ({thr_pass}) > threshold_deny ({thr_deny}) – zamieniam kolejność"
@@ -461,14 +508,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         tekst_pomiar = f"Pomiar: {self.last_promille:.3f} [‰]"
 
-        # Zatrzymaj timery zanim zmienimy stan
         self._stop_timer(self.face_timer)
         self._stop_timer(self.ui_timer)
         self._stop_timer(self.identified_timer)
         self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
 
-        # PASS – strefa "zielona"
         if self.last_promille <= thr_pass:
             self.state = "DECIDE_PASS"
             self.set_message(tekst_pomiar, "Przejście otwarte", color="green")
@@ -477,7 +522,6 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(2500, self.enter_idle)
             return
 
-        # RETRY – strefa "żółta"
         if self.last_promille < thr_deny:
             self.state = "RETRY"
             self.set_message(
@@ -488,22 +532,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self.show_buttons(primary_text="Ponów pomiar", secondary_text="Odmowa")
             return
 
-        # DENY – strefa "czerwona"
         self.state = "DECIDE_DENY"
         self.set_message(tekst_pomiar, "Odmowa", color="red")
         self.show_buttons(primary_text=None, secondary_text=None)
         self.trigger_gate_and_log(False, self.last_promille)
         QtCore.QTimer.singleShot(3000, self.enter_idle)
 
-
     # ----- Ticki odliczania -----
     def on_identified_tick(self):
-        # Ten tick działa tylko w stanie IDENTIFIED_WAIT
         if self.state != "IDENTIFIED_WAIT":
             self._stop_timer(self.identified_timer)
             return
 
-        # Zmniejsz licznik i zaktualizuj napis
         self.identified_seconds_left -= 1
         if self.identified_seconds_left > 0:
             tekst_gora = f"Za {self.identified_seconds_left} s zaczynamy pomiar"
@@ -511,27 +551,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self.set_message(tekst_gora, tekst_srodek, color="white")
             return
 
-        # Licznik się skończył: zatrzymaj timer
         self._stop_timer(self.identified_timer)
 
-        # Na koniec odliczania musimy zdecydować, czy przejść do pomiaru, czy wrócić
-        # do DETECT.  Logika zaczerpnięta ze starego stanu CALIBRATE:
-        # 1. Jeżeli fallback_pin_flag jest ustawiona (awaryjne dopuszczenie), od razu pomiar.
         if self.fallback_pin_flag:
             self.enter_measure()
             return
-        # 2. Jeżeli twarz była wystarczająco blisko (duża w kadrze), pomiar.
         if self.calibrate_good_face:
             self.enter_measure()
             return
-        # 3. Jeżeli ktoś był widoczny w kadrze, ale za mały, oznaczamy fallback_pin_flag
-        #    i przechodzimy do pomiaru.  To pozwala śledzić, że osoba obniżyła głowę
-        #    do ustnika i zniknęła z kadru.
         if self.calibrate_seen_face:
             self.fallback_pin_flag = True
             self.enter_measure()
             return
-        # 4. W przeciwnym razie wracamy do szukania twarzy.
         self.enter_detect()
 
     def on_calibrate_tick(self):
@@ -585,7 +616,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 color="white",
             )
         else:
-            # Koniec okna pomiarowego – zatrzymujemy timer
             self._stop_timer(self.measure_timer)
 
             samples = list(self.measure_samples)
@@ -596,7 +626,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 except Exception as e:
                     print(f"[MEASURE] błąd liczenia promili: {e}")
                     promille = 0.0
-                # Zapisz wynik i wróć na główny wątek Qt
                 self._pending_promille = promille
                 QtCore.QMetaObject.invokeMethod(
                     self,
@@ -606,7 +635,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
             threading.Thread(target=worker, daemon=True).start()
 
-
     # ----- Przycisk primary -----
     def on_btn_primary(self):
         if self.state == "RETRY":
@@ -615,7 +643,6 @@ class MainWindow(QtWidgets.QMainWindow):
     # ----- Przycisk secondary -----
     def on_btn_secondary(self):
         if self.state == "RETRY":
-            # Odmowa w stanie RETRY
             self.set_message("Odmowa", "", color="red")
             self.trigger_gate_and_log(False, self.last_promille)
             self.show_buttons(primary_text=None, secondary_text=None)
@@ -625,7 +652,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.state in ("IDLE", "DETECT"):
             self.enter_pin_entry()
 
-    # ----- Zbieranie próbek twarzy po PIN -----
     # ----- Zbieranie próbek twarzy po PIN -----
     def collect_new_shots_for_current_emp(self):
         emp_id = self.current_emp_id
@@ -682,7 +708,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.last_face_bbox = (x, y, w, h)
             self.last_confidence = 100.0
 
-            # Bezpieczne przycięcie do granic klatki
             h_img, w_img = szary.shape[:2]
             x1 = max(0, int(x))
             y1 = max(0, int(y))
@@ -690,7 +715,6 @@ class MainWindow(QtWidgets.QMainWindow):
             y2 = min(int(y + h), h_img)
 
             if x2 <= x1 or y2 <= y1:
-                # detektor zwrócił coś poza kadrem – poczekaj na następną klatkę
                 self.set_message(
                     "Przytrzymaj twarz w obwódce",
                     f"Zbieram próbki {zapisane}/{ile_potrzeba}",
@@ -710,7 +734,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
             roi_gray = szary[y1:y2, x1:x2]
             if roi_gray.size == 0:
-                # dodatkowy bezpiecznik przed resize
                 QtCore.QTimer.singleShot(80, tick)
                 return
 
@@ -750,7 +773,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         QtCore.QTimer.singleShot(80, tick)
 
-
     def training_start(self, post_action):
         """Uruchom reindeksację twarzy w osobnym wątku."""
         self.post_training_action = post_action
@@ -789,7 +811,7 @@ class MainWindow(QtWidgets.QMainWindow):
             try:
                 if _MONGO_CLIENT is None:
                     _MONGO_CLIENT = MongoClient(
-                        CONFIG.get("mongo_uri", "mongodb://localhost:27017"),
+                        CONFIG.get("mongo_uri"),
                         serverSelectionTimeoutMS=200,
                         connectTimeoutMS=200,
                         socketTimeoutMS=200,
@@ -813,6 +835,7 @@ class MainWindow(QtWidgets.QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
 
 
+    # ----- bramka + logi -----
     # ----- bramka + logi -----
     def trigger_gate_and_log(self, pass_ok: bool, promille: float):
         emp_name = self.current_emp_name or "<nieznany>"
@@ -848,6 +871,7 @@ class MainWindow(QtWidgets.QMainWindow):
             [ts, emp_name, emp_id, f"{promille:.3f}", int(self.fallback_pin_flag)]
         )
 
+        # PIN pracownika do logu w Mongo
         emp_pin = None
         try:
             entry = self.facedb.emp_by_id.get(self.current_emp_id or "")
@@ -856,8 +880,8 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             emp_pin = None
 
+        # Asynchroniczne logowanie do Mongo (nie blokuje RPi)
         self._log_to_mongo_async(ts, emp_id, emp_name, emp_pin, promille, pass_ok)
-
 
 
     # ----- Helpery preview -----
@@ -968,13 +992,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.last_face_bbox = bbox
         self.last_confidence = conf or 0.0
 
-        # IDLE -> DETECT
         if self.state == "IDLE":
             if bbox is not None:
                 self.enter_detect()
             return
 
-        # DETECT -> rozpoznanie stabilne lub porażka
         if self.state == "DETECT":
             if bbox is None:
                 self.detect_fail_count = 0
@@ -1000,7 +1022,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._stable_emp_id == emp_id and
                 self._stable_count >= CONFIG["recognition_stable_ticks"]
             ):
-                # rozpoznano pewnie
                 self.current_emp_id = emp_id
                 self.current_emp_name = emp_name
                 self.fallback_pin_flag = False
@@ -1010,7 +1031,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.enter_identified_wait()
                 return
 
-            # bez stabilnego rozpoznania
             self.detect_fail_count += 1
             if self.detect_fail_count >= CONFIG["detect_fail_limit"]:
                 self.enter_pin_entry()
@@ -1022,7 +1042,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.set_message(now_str(), f"pewność: {conf:.0f}%", color="white")
             return
 
-        # DETECT_RETRY -> sprawdzanie konkretnego pracownika
         if self.state == "DETECT_RETRY":
             self.detect_retry_count += 1
             if (
@@ -1047,10 +1066,6 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
-        # CALIBRATE lub IDENTIFIED_WAIT -> zbieranie informacji o twarzy
-        # W trakcie odliczania do pomiaru lub starej kalibracji monitorujemy,
-        # czy twarz pozostaje w kadrze i czy jest wystarczająco duża.  Dzięki temu
-        # możemy przejść do pomiaru nawet jeśli osoba nachyliła się do ustnika.
         if self.state in ("CALIBRATE", "IDENTIFIED_WAIT"):
             if self.last_face_bbox is not None:
                 self.calibrate_seen_face = True
@@ -1059,7 +1074,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.calibrate_good_face = True
             return
 
-        # inne stany – brak akcji
         return
 
     # ----- UI tick (zegarek) -----
@@ -1088,7 +1102,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ----- zamykanie -----
     def closeEvent(self, e: QtGui.QCloseEvent):
-        # zatrzymaj timery
         for t in [
             getattr(self, "measure_timer", None),
             getattr(self, "calibrate_timer", None),
@@ -1096,6 +1109,7 @@ class MainWindow(QtWidgets.QMainWindow):
             getattr(self, "face_timer", None),
             getattr(self, "ui_timer", None),
             getattr(self, "cam_timer", None),
+            getattr(self, "sync_timer", None),
         ]:
             try:
                 if t and t.isActive():
@@ -1103,25 +1117,21 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-        # zatrzymaj kamerę
         try:
             self.cam.stop()
         except Exception:
             pass
 
-        # zamknij SPI
         try:
             self.adc.close()
         except Exception:
             pass
 
-        # GPIO cleanup
         try:
             GPIO.cleanup()
         except Exception:
             pass
 
-        # domknij dialogi
         for w in QtWidgets.QApplication.topLevelWidgets():
             if w is not self:
                 try:
@@ -1147,9 +1157,6 @@ def main():
 
     app = QtWidgets.QApplication(sys.argv)
     win = MainWindow()
-
-    # Uruchom serwer administracyjny w osobnym wątku
-    # threading.Thread(target=admin_server.run_server, daemon=True).start()
 
     if CONFIG["fullscreen"]:
         win.showFullScreen()
