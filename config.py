@@ -1,9 +1,14 @@
 """
-Konfiguracja aplikacji Alkotester.
+Konfiguracja aplikacji Alkotester z rozszerzonymi funkcjami.
 
-Ta wersja jest dla Raspberry Pi (urządzenie). Panel admina siedzi na Render,
-ale urządzenie nadal trzyma lokalne pliki: employees.json + logs/*.
+Ta konfiguracja bazuje na oryginalnych ustawieniach projektu i rozszerza je
+o obsługę dodatkowych czujników (dystansu i mikrofonu) oraz sterowanie
+dodatkowymi diodami LED sygnalizującymi wynik pomiaru.  Wartości te można
+dostosować do konkretnej instalacji sprzętowej.
 """
+
+# Oryginalna konfiguracja została zachowana w całości.  Nowe opcje zostały
+# dodane na końcu słownika CONFIG.
 
 CONFIG = {
     # --- ekran / UI ---
@@ -54,7 +59,7 @@ CONFIG = {
     "mq3_channel": 0,
     "baseline_samples": 150,
     "promille_scale": 220.0,
-    "measure_seconds": 5.0,
+    "measure_seconds": 3.0,
 
     # --- progi decyzji [‰] ---
     "threshold_pass": 0.2,
@@ -94,4 +99,24 @@ CONFIG = {
 
     # Port dla lokalnego serwera admina (jeśli kiedyś włączysz na RPi)
     "admin_port": 5000,
+
+    # === Dodatkowe czujniki i elementy sygnalizacyjne ===
+    # Kanał MCP3008, do którego podłączony jest czujnik odległości GP2Y0A21.
+    # Numeracja kanałów zaczyna się od 0. W instalacji referencyjnej MQ-3 jest na kanale 0,
+    # więc odległości używamy kanału 1.
+    "distance_channel": 1,
+    # Kanał MCP3008 dla mikrofonu wykrywającego nadmuch powietrza (dmuchanie).
+    "mic_channel": 2,
+    # Minimalna i maksymalna odległość [cm], w której rozpoczyna się pomiar.
+    "distance_min_cm": 8.0,
+    "distance_max_cm": 20.0,
+    # Minimalna wartość surowego odczytu z mikrofonu, którą traktujemy jako dmuchanie.
+    # Wartość ta zależy od konkretnego mikrofonu – w razie potrzeby dostosuj.
+    "mic_threshold": 300,
+    # Numer GPIO dla zielonej diody LED (sygnalizacja pozytywnego wyniku).
+    "led_pass_gpio": 24,
+    # Numer GPIO dla czerwonej diody LED (sygnalizacja odmowy).
+    "led_deny_gpio": 23,
+    # Czas trzymania diody LED w stanie wysokim [s].
+    "led_pulse_sec": 3.0,
 }

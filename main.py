@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-Główna aplikacja Alkotester oraz uruchomienie wątku serwera administracyjnego.
+Główna aplikacja Alkotester z rozszerzonymi funkcjami.
 
-Ten moduł odpowiada za obsługę cyklu życia urządzenia: inicjalizację
-interfejsu graficznego, przechwytywanie obrazu z kamery, detekcję
-twarzy, zbieranie próbek wdychania alkoholu, podejmowanie decyzji
-o udzieleniu dostępu oraz rejestrowanie zdarzeń.  Dodatkowo w wątku
-pobocznym uruchamiany jest prosty serwer HTTP, który umożliwia
-administratorowi przeglądanie logów i dodawanie nowych pracowników.
+Ten moduł stanowi serce programu uruchamianego na Raspberry Pi.  W
+dodatku do oryginalnej funkcjonalności wprowadzono obsługę czujnika
+odległości GP2Y0A21, mikrofonu analogowego na MCP3008 oraz diod LED
+sygnalizujących wynik pomiaru.  Użytkownik ma również możliwość
+wykorzystania specjalnego trybu "Gość", który pozwala na przejście
+bez rozpoznawania twarzy.
 """
 
 import os
@@ -71,8 +71,11 @@ class MainWindow(QtWidgets.QMainWindow):
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
         GPIO.setup(CONFIG["gate_gpio"], GPIO.OUT, initial=GPIO.LOW)
+        # Konfiguracja diod LED sygnalizujących wynik
+        GPIO.setup(CONFIG["led_pass_gpio"], GPIO.OUT, initial=GPIO.LOW)
+        GPIO.setup(CONFIG["led_deny_gpio"], GPIO.OUT, initial=GPIO.LOW)
 
-        # Czujnik MQ-3
+        # Czujnik MQ-3 i konwerter MCP3008
         self.adc = MCP3008(CONFIG["spi_bus"], CONFIG["spi_device"])
         self.mq3 = MQ3Sensor(
             self.adc,
@@ -118,7 +121,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         uklad_zew.addWidget(self.view, 1)
 
-        # Pasek dolny
+        # Pasek dolny (overlay)
         self.overlay = QtWidgets.QFrame()
         self.overlay.setFixedHeight(CONFIG["overlay_height_px"])
         self.overlay.setStyleSheet("background: rgba(0,0,0,110); color:white;")
@@ -127,18 +130,32 @@ class MainWindow(QtWidgets.QMainWindow):
         uklad_overlay.setContentsMargins(16, 12, 16, 12)
         uklad_overlay.setSpacing(8)
 
+        # Górny pasek z zegarem i przyciskiem Gość
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(8)
         self.lbl_top = QtWidgets.QLabel("")
         self.lbl_top.setStyleSheet("color:white; font-size:28px; font-weight:600;")
-        uklad_overlay.addWidget(self.lbl_top)
+        top_row.addWidget(self.lbl_top)
+        top_row.addStretch(1)
+        self.btn_guest = QtWidgets.QPushButton("Gość")
+        self.btn_guest.setStyleSheet(
+            "font-size:20px; padding:6px 12px; border-radius:12px; "
+            "background:#6a1b9a; color:white;"
+        )
+        self.btn_guest.clicked.connect(self.on_btn_guest)
+        top_row.addWidget(self.btn_guest)
+        uklad_overlay.addLayout(top_row)
 
+        # Centralny napis
         self.lbl_center = QtWidgets.QLabel("")
         self.lbl_center.setAlignment(QtCore.Qt.AlignCenter)
         self.lbl_center.setStyleSheet("color:white; font-size:36px; font-weight:700;")
         uklad_overlay.addWidget(self.lbl_center, 1)
 
+        # Rząd przycisków (podczas decyzji / retry)
         rzad_przyciski = QtWidgets.QHBoxLayout()
         rzad_przyciski.setSpacing(12)
-
         self.btn_primary = QtWidgets.QPushButton("Ponów pomiar")
         self.btn_primary.setStyleSheet(
             "font-size:24px; padding:12px 18px; border-radius:16px; background:#2e7d32; color:white;"
@@ -147,10 +164,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_secondary.setStyleSheet(
             "font-size:24px; padding:12px 18px; border-radius:16px; background:#1565c0; color:white;"
         )
-
         rzad_przyciski.addWidget(self.btn_primary)
         rzad_przyciski.addWidget(self.btn_secondary)
         uklad_overlay.addLayout(rzad_przyciski)
+
+        # Pasek postępu dla pomiaru nadmuchowego
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setStyleSheet(
+            "QProgressBar {background-color: #444444; border-radius: 10px; color:white; font-size:24px;} "
+            "QProgressBar::chunk { background-color: #00c853; }"
+        )
+        self.progress_bar.setFixedHeight(30)
+        self.progress_bar.hide()
+        uklad_overlay.addWidget(self.progress_bar)
 
         uklad_zew.addWidget(self.overlay, 0)
 
@@ -159,8 +187,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Dane aktualnego pracownika
         self.current_emp_id = None
-        my_curr_name = None
-        self.current_emp_name = my_curr_name
+        self.current_emp_name = None
 
         # Flaga dopuszczenia po PIN
         self.fallback_pin_flag = False
@@ -188,6 +215,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self.measure_samples = []
 
         self.post_training_action = None
+
+        # Dodatkowe zmienne dla pomiaru nadmuchowego
+        self.distance_channel = CONFIG.get("distance_channel", 1)
+        self.mic_channel = CONFIG.get("mic_channel", 2)
+        self.distance_min_cm = CONFIG.get("distance_min_cm", 15.0)
+        self.distance_max_cm = CONFIG.get("distance_max_cm", 20.0)
+        self.mic_threshold = CONFIG.get("mic_threshold", 500)
+
+        self.blow_elapsed = 0.0
+        self._debug_mic_last_print = 0.0
+        # stan „czy aktualnie dmuchamy” z podtrzymaniem
+        self.blow_active = False
+        self._blow_release_ts = 0.
+
+        self.is_guest = False
+
 
         # Inicjalizacja kamery
         self.cam = CameraManager(
@@ -238,6 +281,49 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # --- SYNC employees.json z masterem na Renderze ---
 
+    def _crop_and_scale_fill(self, img, target_w, target_h):
+        """
+        Przytnij obraz tak, żeby zachować proporcje, a potem przeskaluj
+        do (target_w, target_h), wypełniając cały label (bez czarnych pasów).
+
+        img – numpy array w RGB (h, w, 3)
+        Zwraca: przeskalowany obraz RGB lub None gdy coś jest nie tak.
+        """
+        if img is None or target_w <= 0 or target_h <= 0:
+            return None
+
+        h, w = img.shape[:2]
+        if h == 0 or w == 0:
+            return None
+
+        src_ar = w / float(h)
+        dst_ar = target_w / float(target_h)
+
+        # Jeśli źródło szersze niż docelowy prostokąt – przytnij boki.
+        if src_ar > dst_ar:
+            new_w = int(h * dst_ar)
+            if new_w <= 0:
+                return None
+            x1 = max(0, (w - new_w) // 2)
+            x2 = x1 + new_w
+            crop = img[:, x1:x2]
+        else:
+            # Źródło „wyższe” – przytnij górę/dół.
+            new_h = int(w / dst_ar)
+            if new_h <= 0:
+                return None
+            y1 = max(0, (h - new_h) // 2)
+            y2 = y1 + new_h
+            crop = img[y1:y2, :]
+
+        if crop.size == 0:
+            return None
+
+        # Skaluje do dokładnego rozmiaru labela
+        resized = cv2.resize(crop, (int(target_w), int(target_h)), interpolation=cv2.INTER_AREA)
+        return resized
+
+
     def sync_employees_from_server(self):
         """
         Pobierz aktualną listę pracowników z serwera (Render master)
@@ -287,6 +373,49 @@ class MainWindow(QtWidgets.QMainWindow):
 
         except Exception as e:
             print(f"[SYNC] Błąd pobierania z serwera: {e}")
+
+    def _online_learn_face(self, emp_id: str):
+        """
+        Doincrementalne uczenie twarzy – dociągamy pojedynczą klatkę
+        i dokładamy próbkę do bazy, jeśli jest wystarczająco dobra.
+        """
+        try:
+            if self.last_face_bbox is None:
+                return
+            if self.frame_last_bgr is None:
+                return
+
+            (fx, fy, fw, fh) = self.last_face_bbox
+            fx = int(max(0, fx))
+            fy = int(max(0, fy))
+            fw = int(max(0, fw))
+            fh = int(max(0, fh))
+
+            h_img, w_img, _ = self.frame_last_bgr.shape
+            x2 = min(fx + fw, w_img)
+            y2 = min(fy + fh, h_img)
+            if x2 <= fx or y2 <= fy:
+                return
+
+            # Wytnij twarz, przeskaluj do 240x240
+            twarz_bgr = self.frame_last_bgr[fy:y2, fx:x2].copy()
+            twarz_bgr = cv2.resize(
+                twarz_bgr,
+                (240, 240),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+            # Sprawdź jakość (ostrość / jasność)
+            twarz_szara = cv2.cvtColor(twarz_bgr, cv2.COLOR_BGR2GRAY)
+            ok_q, ostrosc, jasnosc = _face_quality(twarz_szara)
+            if not ok_q:
+                return
+
+            # Dodaj próbkę do bazy twarzy
+            self.facedb.add_online_face_sample(emp_id, twarz_bgr)
+        except Exception:
+            # Lepiej nic nie zepsuć niż wywalić całą aplikację
+            pass
 
 
     def on_sync_tick(self):
@@ -346,6 +475,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_emp_id = None
         self.current_emp_name = None
         self.fallback_pin_flag = False
+        self.is_guest = False
+
 
         self.last_face_bbox = None
         self.last_confidence = 0.0
@@ -361,6 +492,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.measure_deadline = 0.0
         self.measure_samples = []
+        self.blow_elapsed = 0.0
+        self.progress_bar.hide()
 
         self.ui_timer.start(250)
         self.face_timer.start(CONFIG["face_detect_interval_ms"])
@@ -444,36 +577,60 @@ class MainWindow(QtWidgets.QMainWindow):
     def enter_identified_wait(self):
         """
         Przejście do stanu oczekiwania przed pomiarem.
+
+        W tej wersji:
+        - nie ma odliczania w sekundach,
+        - mierzymy na bieżąco odległość z czujnika,
+        - gdy pracownik znajdzie się w dopuszczalnym przedziale,
+          przechodzimy automatycznie do stanu MEASURE.
         """
         self.state = "IDENTIFIED_WAIT"
-        self.identified_seconds_left = 5
 
+        # Reset flag kalibracji twarzy – będą aktualizowane w on_face_tick
         self.calibrate_good_face = False
         self.calibrate_seen_face = False
 
+        # Detekcja twarzy nadal działa, żeby pilnować, że ktoś stoi przed kamerą
         self.face_timer.start(CONFIG["face_detect_interval_ms"])
 
+        # Zatrzymaj inne timery poza identified_timer
         self._stop_timer(self.ui_timer)
         self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
         self._stop_timer(self.identified_timer)
 
-        self.identified_timer.start(1000)
+        # Timer do sprawdzania odległości co 200 ms
+        self.identified_timer.start(200)
 
-        tekst_gora = f"Za {self.identified_seconds_left} s zaczynamy pomiar"
-        tekst_srodek = f"Cześć {self.current_emp_name or ''}"
+        imie = self.current_emp_name or ""
+        dist_cm = self.read_distance_cm()
+        if dist_cm == float("inf"):
+            dist_txt = "brak odczytu"
+        elif dist_cm > 80:
+            dist_txt = ">80 cm"
+        else:
+            dist_txt = f"{dist_cm:0.0f} cm"
+
+        tekst_gora = "Podejdź bliżej"
+        tekst_srodek = f"Cześć {imie}\nOdległość: {dist_txt}"
         self.set_message(tekst_gora, tekst_srodek, color="white")
         self.show_buttons(primary_text=None, secondary_text=None)
+
+
 
     def enter_calibrate(self):
         self.enter_identified_wait()
 
     def enter_measure(self):
-        """Stan pomiaru stężenia alkoholu."""
+        """Stan pomiaru stężenia alkoholu wraz z kontrolą dystansu i dmuchania."""
         self.state = "MEASURE"
+        # Przygotuj listę próbek i licznik nadmuchu
         self.measure_samples = []
+        self.blow_elapsed = 0.0
+        # Czas końca pomiaru (niewykorzystywany w trybie dmuchanym, ale pozostawiony dla zgodności)
         self.measure_deadline = time.time() + CONFIG["measure_seconds"]
 
+        # Wyłącz podgląd twarzy podczas pomiaru
         self.last_face_bbox = None
         self.last_confidence = 0.0
 
@@ -482,6 +639,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_timer(self.identified_timer)
         self._stop_timer(self.calibrate_timer)
 
+        # Resetuj i pokaż pasek postępu
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+
+        # Uruchom timer pomiaru w odstępach ~100 ms
         self.measure_timer.start(100)
 
         self.set_message(
@@ -499,6 +661,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def enter_decide(self, promille):
         """Podejmij decyzję na podstawie wyniku pomiaru."""
+        # Ukryj pasek postępu po zakończeniu pomiaru
+        self.progress_bar.hide()
+
         self.last_promille = float(promille)
 
         try:
@@ -529,15 +694,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
 
+        # Domyślnie zakładamy, że warunek pass/deny opiera się na progu
+        result_pass = False
+        result_retry = False
         if self.last_promille <= thr_pass:
+            result_pass = True
+        elif self.last_promille < thr_deny:
+            result_retry = True
+        else:
+            result_pass = False
+
+        # Zaktualizuj interfejs i steruj bramką/LED w zależności od wyniku
+        if result_pass and not result_retry:
             self.state = "DECIDE_PASS"
             self.set_message(tekst_pomiar, "Przejście otwarte", color="green")
             self.show_buttons(primary_text=None, secondary_text=None)
             self.trigger_gate_and_log(True, self.last_promille)
+            self.trigger_led(True)
             QtCore.QTimer.singleShot(2500, self.enter_idle)
             return
 
-        if self.last_promille < thr_deny:
+        if result_retry:
             self.state = "RETRY"
             self.set_message(
                 tekst_pomiar,
@@ -547,38 +724,61 @@ class MainWindow(QtWidgets.QMainWindow):
             self.show_buttons(primary_text="Ponów pomiar", secondary_text="Odmowa")
             return
 
+        # Odmowa
         self.state = "DECIDE_DENY"
         self.set_message(tekst_pomiar, "Odmowa", color="red")
         self.show_buttons(primary_text=None, secondary_text=None)
         self.trigger_gate_and_log(False, self.last_promille)
+        self.trigger_led(False)
         QtCore.QTimer.singleShot(3000, self.enter_idle)
 
     # ----- Ticki odliczania -----
     def on_identified_tick(self):
+        """
+        Okresowo sprawdzaj odległość w stanie IDENTIFIED_WAIT
+        i aktualizuj komunikat. Gdy odległość jest w dobrym zakresie
+        (i kamera widzi twarz), przejdź do pomiaru.
+        """
         if self.state != "IDENTIFIED_WAIT":
             self._stop_timer(self.identified_timer)
             return
 
-        self.identified_seconds_left -= 1
-        if self.identified_seconds_left > 0:
-            tekst_gora = f"Za {self.identified_seconds_left} s zaczynamy pomiar"
-            tekst_srodek = f"Cześć {self.current_emp_name or ''}"
-            self.set_message(tekst_gora, tekst_srodek, color="white")
-            return
+        dist_cm = self.read_distance_cm()
+        imie = self.current_emp_name or ""
+        if dist_cm == float("inf"):
+            dist_txt = "brak odczytu"
+        elif dist_cm > 80:
+            dist_txt = ">80 cm"
+        else:
+            dist_txt = f"{dist_cm:0.0f} cm"
 
-        self._stop_timer(self.identified_timer)
+        # Jesteśmy w dobrym zakresie odległości
+        if self.distance_min_cm <= dist_cm <= self.distance_max_cm:
+            # Kamera widziała sensowną twarz (ustawiane w on_face_tick)
+            if self.calibrate_good_face or self.fallback_pin_flag:
+                self._stop_timer(self.identified_timer)
+                tekst_gora = "Nie ruszaj się – start pomiaru"
+                tekst_srodek = f"Cześć {imie}\nOdległość: {dist_txt}"
+                self.set_message(tekst_gora, tekst_srodek, color="white")
+                self.enter_measure()
+                return
+            else:
+                # Jesteś blisko, ale twarz jeszcze nie jest OK
+                self.set_message(
+                    "Stań przodem do kamery",
+                    f"Cześć {imie}\nOdległość: {dist_txt}",
+                    color="white",
+                )
+                return
 
-        if self.fallback_pin_flag:
-            self.enter_measure()
-            return
-        if self.calibrate_good_face:
-            self.enter_measure()
-            return
-        if self.calibrate_seen_face:
-            self.fallback_pin_flag = True
-            self.enter_measure()
-            return
-        self.enter_detect()
+        # Poza zakresem – prosimy o podejście bliżej
+        self.set_message(
+            "Podejdź bliżej",
+            f"Cześć {imie}\nOdległość: {dist_txt}",
+            color="white",
+        )
+
+
 
     def on_calibrate_tick(self):
         if self.state != "CALIBRATE":
@@ -621,18 +821,56 @@ class MainWindow(QtWidgets.QMainWindow):
             self._stop_timer(self.measure_timer)
             return
 
-        ile_pozostalo = self.measure_deadline - time.time()
-        self.measure_samples.append(self.mq3.read_raw())
+        # Odstęp czasowy między tickami
+        try:
+            dt = self.measure_timer.interval() / 1000.0
+        except Exception:
+            dt = 0.1
 
-        if ile_pozostalo > 0:
-            self.set_message(
-                "Przeprowadzam pomiar…",
-                f"{ile_pozostalo:0.1f} s",
-                color="white",
-            )
+        # Odczyty z czujników
+        dist_cm = self.read_distance_cm()
+        amp, avg = self.read_mic_amplitude(samples=CONFIG.get("mic_amp_samples", 32))
+
+        blow_detected = (
+            self.distance_min_cm <= dist_cm <= self.distance_max_cm
+            and amp >= self.mic_threshold
+        )
+
+        # Prosty debug do strojenia progu mikrofonu
+        print(
+            f"[MEASURE] dist_cm={dist_cm:4.1f}  amp={amp:4d}  avg={avg:4d}  "
+            f"thr={self.mic_threshold}  blow={blow_detected}"
+        )
+
+        if blow_detected:
+            self.blow_elapsed += dt
+            # Pobierz próbkę z MQ-3 tylko podczas dmuchania
+            try:
+                self.measure_samples.append(self.mq3.read_raw())
+            except Exception:
+                pass
+
+        remaining = CONFIG["measure_seconds"] - self.blow_elapsed
+        if remaining < 0:
+            remaining = 0.0
+
+        # Aktualizacja paska postępu
+        progress = max(0.0, min(self.blow_elapsed / CONFIG["measure_seconds"], 1.0))
+        self.progress_bar.setValue(int(progress * 100))
+        self.progress_bar.show()
+
+        # Aktualizacja komunikatu zależnie od warunków
+        if blow_detected:
+            self.set_message("Przeprowadzam pomiar…", f"{remaining:0.1f} s", color="white")
         else:
-            self._stop_timer(self.measure_timer)
+            if not (self.distance_min_cm <= dist_cm <= self.distance_max_cm):
+                self.set_message("Podejdź bliżej", f"{remaining:0.1f} s", color="white")
+            else:
+                self.set_message("Dmuchaj", f"{remaining:0.1f} s", color="white")
 
+        # Zakończenie pomiaru po osiągnięciu wymaganego czasu nadmuchu
+        if self.blow_elapsed >= CONFIG["measure_seconds"]:
+            self._stop_timer(self.measure_timer)
             samples = list(self.measure_samples)
 
             def worker():
@@ -650,6 +888,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
             threading.Thread(target=worker, daemon=True).start()
 
+
     # ----- Przycisk primary -----
     def on_btn_primary(self):
         if self.state == "RETRY":
@@ -660,6 +899,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.state == "RETRY":
             self.set_message("Odmowa", "", color="red")
             self.trigger_gate_and_log(False, self.last_promille)
+            self.trigger_led(False)
             self.show_buttons(primary_text=None, secondary_text=None)
             QtCore.QTimer.singleShot(2000, self.enter_idle)
             return
@@ -850,14 +1090,27 @@ class MainWindow(QtWidgets.QMainWindow):
 
         threading.Thread(target=worker, daemon=True).start()
 
-
-
     # ----- bramka + logi -----
     # ----- bramka + logi -----
     def trigger_gate_and_log(self, pass_ok: bool, promille: float):
+        # Tryb Gość: nie logujemy nic do plików ani Mongo,
+        # ale możemy nadal sterować bramką na podstawie wyniku.
+        if self.is_guest:
+            if pass_ok:
+                GPIO.output(CONFIG["gate_gpio"], GPIO.HIGH)
+
+                def pulse():
+                    time.sleep(CONFIG["gate_pulse_sec"])
+                    GPIO.output(CONFIG["gate_gpio"], GPIO.LOW)
+
+                threading.Thread(target=pulse, daemon=True).start()
+            # brak logów dla gościa
+            return
+
         emp_name = self.current_emp_name or "<nieznany>"
         emp_id = self.current_emp_id or "<none>"
         ts = datetime.now().isoformat()
+
 
         # Obsługa bramki
         if pass_ok:
@@ -900,62 +1153,82 @@ class MainWindow(QtWidgets.QMainWindow):
         # Asynchroniczne logowanie do Mongo (nie blokuje RPi)
         self._log_to_mongo_async(ts, emp_id, emp_name, emp_pin, promille, pass_ok)
 
-
-    # ----- Helpery preview -----
-    def _crop_and_scale_fill(self, src_rgb, target_w, target_h):
-        if target_w <= 0 or target_h <= 0:
-            return None
-
-        sh, sw, _ = src_rgb.shape
-
-        skala_w = target_w / float(sw)
-        skala_h = target_h / float(sh)
-        skala = min(skala_w, skala_h, 1.0)
-
-        nowe_w = int(sw * skala)
-        nowe_h = int(sh * skala)
-
-        if skala != 1.0:
-            przeskalowany = cv2.resize(src_rgb, (nowe_w, nowe_h), interpolation=cv2.INTER_AREA)
-        else:
-            przeskalowany = src_rgb
-
-        wynik = np.zeros((target_h, target_w, 3), dtype=src_rgb.dtype)
-        x0 = (target_w - nowe_w) // 2
-        y0 = (target_h - nowe_h) // 2
-        wynik[y0:y0 + nowe_h, x0:x0 + nowe_w] = przeskalowany
-        return wynik
-
-    def _online_learn_face(self, emp_id: str):
+    # ----- sterowanie diodami LED -----
+    def trigger_led(self, pass_ok: bool):
+        """Zaświeć odpowiednią diodę LED przez zadany czas."""
         try:
-            if self.last_face_bbox is None:
-                return
-            if self.frame_last_bgr is None:
-                return
+            pin = CONFIG["led_pass_gpio"] if pass_ok else CONFIG["led_deny_gpio"]
+            pulse_sec = float(CONFIG.get("led_pulse_sec", 2.0))
+            GPIO.output(pin, GPIO.HIGH)
 
-            (fx, fy, fw, fh) = self.last_face_bbox
-            fx = int(max(0, fx))
-            fy = int(max(0, fy))
-            fw = int(max(0, fw))
-            fh = int(max(0, fh))
+            def worker():
+                try:
+                    time.sleep(pulse_sec)
+                finally:
+                    GPIO.output(pin, GPIO.LOW)
 
-            h_img, w_img, _ = self.frame_last_bgr.shape
-            x2 = min(fx + fw, w_img)
-            y2 = min(fy + fh, h_img)
-            if x2 <= fx or y2 <= fy:
-                return
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception as e:
+            print(f"[LED] Błąd sterowania diodą: {e}")
 
-            twarz_bgr = self.frame_last_bgr[fy:y2, fx:x2].copy()
-            twarz_bgr = cv2.resize(twarz_bgr, (240, 240), interpolation=cv2.INTER_LINEAR)
-
-            twarz_szara = cv2.cvtColor(twarz_bgr, cv2.COLOR_BGR2GRAY)
-            ok_q, ostrosc, jasnosc = _face_quality(twarz_szara)
-            if not ok_q:
-                return
-
-            self.facedb.add_online_face_sample(emp_id, twarz_bgr)
+    # ----- pomocnicze odczyty z czujników -----
+    def read_distance_cm(self) -> float:
+        """Przekształć surowy odczyt z czujnika GP2Y0A21 na odległość w cm."""
+        try:
+            raw = self.adc.read_channel(self.distance_channel)
+            # Zakładamy, że napięcie odniesienia wynosi 3.3 V
+            voltage = (raw / 1023.0) * 3.3
+            # Wzór przybliżony z dokumentacji czujnika GP2Y0A21 (dla zakresu 10–80 cm)
+            if voltage - 0.42 <= 0:
+                return float("inf")
+            distance = 27.86 / (voltage - 0.42)
+            # Ogranicz zakres do 0–80 cm
+            if distance < 0 or distance > 80:
+                return float("inf")
+            return distance
         except Exception:
-            pass
+            return float("inf")
+
+    def read_mic_amplitude(self, samples: int = 32):
+        """
+        Zwróć (amplituda, średnia) z kilku szybkich próbek z kanału mikrofonu.
+
+        amplituda = max - min – prosta miara „głośności” sygnału.
+        """
+        try:
+            n = max(1, int(samples))
+            vals = [self.adc.read_channel(self.mic_channel) for _ in range(n)]
+            vmin = min(vals)
+            vmax = max(vals)
+            avg = int(sum(vals) / len(vals))
+            amp = vmax - vmin
+            return amp, avg
+        except Exception as e:
+            print(f"[MIC] błąd odczytu: {e}")
+            return 0, 0
+
+
+    # ----- obsługa przycisku Gość -----
+    # ----- obsługa przycisku Gość -----
+    def on_btn_guest(self):
+        """
+        Tryb Gość – pełny pomiar (odległość + dmuchanie),
+        ale bez logowania wyników do CSV/Mongo.
+        """
+        # Ustaw dane gościa
+        self.is_guest = True
+        self.current_emp_id = "<guest>"
+        self.current_emp_name = "Gość"
+
+        # Gość nie wymaga rozpoznanej twarzy – traktujemy jak fallback
+        # (on_identified_tick pozwoli wejść w pomiar bez kalibracji twarzy)
+        self.fallback_pin_flag = True
+
+        # Wejdź w standardowy stan IDENTIFIED_WAIT
+        # (kamera i timery zostają, niczego ręcznie nie zatrzymujemy)
+        self.enter_identified_wait()
+
+
 
     # ----- CAMERA TICK -----
     def on_camera_tick(self):
@@ -1160,7 +1433,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 def setup_qt_env():
-    """Ustaw zmienne środowiskowe wymagane przez Qt na Raspberry Pi."""
+    """Ustaw zmienne środowiskowe wymagane przez Qt na Raspberry Pi."""
     os.environ.setdefault("DISPLAY", ":0")
     os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
