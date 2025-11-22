@@ -205,13 +205,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stable_emp_id = None
         self._stable_count = 0
 
-        self.identified_seconds_left = 0
-        self.calibrate_seconds_left = 0
 
         self.calibrate_good_face = False
         self.calibrate_seen_face = False
 
-        self.measure_deadline = 0.0
         self.measure_samples = []
 
         self.post_training_action = None
@@ -224,11 +221,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mic_threshold = CONFIG.get("mic_threshold", 500)
 
         self.blow_elapsed = 0.0
-        self._debug_mic_last_print = 0.0
-        # stan „czy aktualnie dmuchamy” z podtrzymaniem
-        self.blow_active = False
-        self._blow_release_ts = 0.
-
         self.is_guest = False
 
 
@@ -252,9 +244,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.identified_timer = QtCore.QTimer(self)
         self.identified_timer.timeout.connect(self.on_identified_tick)
-
-        self.calibrate_timer = QtCore.QTimer(self)
-        self.calibrate_timer.timeout.connect(self.on_calibrate_tick)
 
         self.measure_timer = QtCore.QTimer(self)
         self.measure_timer.timeout.connect(self.on_measure_tick)
@@ -485,20 +474,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stable_emp_id = None
         self._stable_count = 0
 
-        self.identified_seconds_left = 0
-        self.calibrate_seconds_left = 0
         self.calibrate_good_face = False
         self.calibrate_seen_face = False
 
-        self.measure_deadline = 0.0
         self.measure_samples = []
         self.blow_elapsed = 0.0
+
         self.progress_bar.hide()
 
         self.ui_timer.start(250)
         self.face_timer.start(CONFIG["face_detect_interval_ms"])
         self._stop_timer(self.identified_timer)
-        self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
 
         self.set_message(now_str(), "Podejdź bliżej", color="white")
@@ -514,7 +500,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui_timer.start(250)
         self.face_timer.start(CONFIG["face_detect_interval_ms"])
         self._stop_timer(self.identified_timer)
-        self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
 
         self.set_message(now_str(), "Szukam twarzy…", color="white")
@@ -526,7 +511,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_timer(self.face_timer)
         self._stop_timer(self.ui_timer)
         self._stop_timer(self.identified_timer)
-        self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
 
         # ---- NOWOŚĆ: wymuś sync z Renderem przed wpisaniem PIN-u ----
@@ -568,7 +552,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.face_timer.start(CONFIG["face_detect_interval_ms"])
         self._stop_timer(self.ui_timer)
         self._stop_timer(self.identified_timer)
-        self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
 
         self.set_message("Sprawdzam twarz…", self.current_emp_name or "", color="white")
@@ -595,7 +578,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Zatrzymaj inne timery poza identified_timer
         self._stop_timer(self.ui_timer)
-        self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
         self._stop_timer(self.identified_timer)
 
@@ -618,17 +600,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 
-    def enter_calibrate(self):
-        self.enter_identified_wait()
-
     def enter_measure(self):
         """Stan pomiaru stężenia alkoholu wraz z kontrolą dystansu i dmuchania."""
         self.state = "MEASURE"
         # Przygotuj listę próbek i licznik nadmuchu
         self.measure_samples = []
         self.blow_elapsed = 0.0
-        # Czas końca pomiaru (niewykorzystywany w trybie dmuchanym, ale pozostawiony dla zgodności)
-        self.measure_deadline = time.time() + CONFIG["measure_seconds"]
 
         # Wyłącz podgląd twarzy podczas pomiaru
         self.last_face_bbox = None
@@ -637,8 +614,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_timer(self.face_timer)
         self._stop_timer(self.ui_timer)
         self._stop_timer(self.identified_timer)
-        self._stop_timer(self.calibrate_timer)
-
         # Resetuj i pokaż pasek postępu
         self.progress_bar.setValue(0)
         self.progress_bar.show()
@@ -691,7 +666,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_timer(self.face_timer)
         self._stop_timer(self.ui_timer)
         self._stop_timer(self.identified_timer)
-        self._stop_timer(self.calibrate_timer)
         self._stop_timer(self.measure_timer)
 
         # Domyślnie zakładamy, że warunek pass/deny opiera się na progu
@@ -778,44 +752,6 @@ class MainWindow(QtWidgets.QMainWindow):
             color="white",
         )
 
-
-
-    def on_calibrate_tick(self):
-        if self.state != "CALIBRATE":
-            self._stop_timer(self.calibrate_timer)
-            return
-
-        self.calibrate_seconds_left -= 1
-        if self.calibrate_seconds_left > 0:
-            self.set_message(
-                "Ustaw się prosto, podejdź bliżej",
-                f"Start za {self.calibrate_seconds_left} s",
-                color="white",
-            )
-            return
-
-        self._stop_timer(self.calibrate_timer)
-
-        try:
-            self.on_face_tick()
-        except Exception:
-            pass
-
-        if self.fallback_pin_flag:
-            self.enter_measure()
-            return
-
-        if self.calibrate_good_face:
-            self.enter_measure()
-            return
-
-        if self.calibrate_seen_face:
-            self.fallback_pin_flag = True
-            self.enter_measure()
-            return
-
-        self.enter_detect()
-
     def on_measure_tick(self):
         if self.state != "MEASURE":
             self._stop_timer(self.measure_timer)
@@ -834,12 +770,6 @@ class MainWindow(QtWidgets.QMainWindow):
         blow_detected = (
             self.distance_min_cm <= dist_cm <= self.distance_max_cm
             and amp >= self.mic_threshold
-        )
-
-        # Prosty debug do strojenia progu mikrofonu
-        print(
-            f"[MEASURE] dist_cm={dist_cm:4.1f}  amp={amp:4d}  avg={avg:4d}  "
-            f"thr={self.mic_threshold}  blow={blow_detected}"
         )
 
         if blow_detected:
@@ -1091,7 +1021,6 @@ class MainWindow(QtWidgets.QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     # ----- bramka + logi -----
-    # ----- bramka + logi -----
     def trigger_gate_and_log(self, pass_ok: bool, promille: float):
         # Tryb Gość: nie logujemy nic do plików ani Mongo,
         # ale możemy nadal sterować bramką na podstawie wyniku.
@@ -1208,7 +1137,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return 0, 0
 
 
-    # ----- obsługa przycisku Gość -----
     # ----- obsługa przycisku Gość -----
     def on_btn_guest(self):
         """
@@ -1356,13 +1284,14 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
-        if self.state in ("CALIBRATE", "IDENTIFIED_WAIT"):
+        if self.state == "IDENTIFIED_WAIT":
             if self.last_face_bbox is not None:
                 self.calibrate_seen_face = True
                 (_, _, w, h) = self.last_face_bbox
                 if max(w, h) >= CONFIG["face_min_size"]:
                     self.calibrate_good_face = True
             return
+
 
         return
 
