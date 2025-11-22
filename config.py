@@ -112,7 +112,7 @@ CONFIG = {
     "distance_max_cm": 20.0,
     # Minimalna wartość surowego odczytu z mikrofonu, którą traktujemy jako dmuchanie.
     # Wartość ta zależy od konkretnego mikrofonu – w razie potrzeby dostosuj.
-    "mic_threshold": 300,
+    "mic_threshold": 150,
     # Numer GPIO dla zielonej diody LED (sygnalizacja pozytywnego wyniku).
     "led_pass_gpio": 24,
     # Numer GPIO dla czerwonej diody LED (sygnalizacja odmowy).
