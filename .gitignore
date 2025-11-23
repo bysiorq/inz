@@ -3,4 +3,4 @@ data/
 logs/
 __pycache__/
 config.py
-env
+.env
