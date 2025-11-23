@@ -5,3 +5,4 @@ __pycache__/
 config.py
 .env
 /server/__pycache__
+/server/config

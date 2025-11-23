@@ -90,6 +90,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if CONFIG["hide_cursor"]:
             self.setCursor(QtCore.Qt.BlankCursor)
 
+        print(f"[MongoDebug] CONFIG['mongo_uri'] = {CONFIG.get('mongo_uri')}")
+        print(f"[MongoDebug] CONFIG['mongodb_db_name'] = {CONFIG.get('mongodb_db_name')}")
+
+
         # Tworzenie interfejsu
         centralny = QtWidgets.QWidget()
         self.setCentralWidget(centralny)
@@ -1024,6 +1028,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # Sprawdź, czy konfiguracja Mongo zawiera URI i nazwę bazy.
         mongo_uri = CONFIG.get("mongo_uri") or ""
         db_name = CONFIG.get("mongodb_db_name") or "alkotester"
+        # Sprawdź, czy URI jest ustawione
+        print(f"[MongoDebug] Próba logu do Mongo, mongo_uri={mongo_uri!r}")
+        if not mongo_uri:
+            print("[MongoDebug] Brak mongo_uri w konfiguracji – zapis tylko do CSV.")
+            return
+
         # Jeśli URI jest pusty, nie próbuj łączyć się z bazą.
         if not mongo_uri:
             return
