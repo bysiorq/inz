@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 3. Python dependencies
-COPY requirements.txt .
+COPY /server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 4. Aplikacja
