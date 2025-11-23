@@ -4,7 +4,7 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-WORKDIR /app
+WORKDIR /server
 
 # 2. Systemowe zależności (certyfikaty TLS itd.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
