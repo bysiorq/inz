@@ -3,7 +3,7 @@ import time
 from sensors import MCP3008
 
 adc = MCP3008(0, 0)
-CH = 2
+CH = 0
 
 print("Cisza / dmuchanie / krzyk – patrzymy na amp")
 try:

@@ -59,7 +59,7 @@ CONFIG = {
     "mq3_channel": 0,
     "baseline_samples": 150,
     "promille_scale": 220.0,
-    "measure_seconds": 3.0,
+    "measure_seconds": 2.0,
 
     # --- progi decyzji [‰] ---
     "threshold_pass": 0.2,

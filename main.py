@@ -1,17 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Główna aplikacja Alkotester z rozszerzonymi funkcjami.
-
-Ten moduł stanowi serce programu uruchamianego na Raspberry Pi.  W
-dodatku do oryginalnej funkcjonalności wprowadzono obsługę czujnika
-odległości GP2Y0A21, mikrofonu analogowego na MCP3008 oraz diod LED
-sygnalizujących wynik pomiaru.  Użytkownik ma również możliwość
-wykorzystania specjalnego trybu "Gość", który pozwala na przejście
-bez rozpoznawania twarzy.
-"""
-
 import os
 import sys
 import cv2
@@ -147,38 +133,66 @@ class MainWindow(QtWidgets.QMainWindow):
         top_row.addWidget(self.btn_guest)
         uklad_overlay.addLayout(top_row)
 
-        # Centralny napis
+        # Centralny obszar: albo napis, albo pasek postępu – w tym samym miejscu
+        self.center_stack = QtWidgets.QStackedLayout()
+        self.center_stack.setContentsMargins(0, 0, 0, 0)
+        self.center_stack.setSpacing(0)
+
+        # Duży napis w środku
         self.lbl_center = QtWidgets.QLabel("")
         self.lbl_center.setAlignment(QtCore.Qt.AlignCenter)
         self.lbl_center.setStyleSheet("color:white; font-size:36px; font-weight:700;")
-        uklad_overlay.addWidget(self.lbl_center, 1)
+        self.center_stack.addWidget(self.lbl_center)  # index 0
 
-        # Rząd przycisków (podczas decyzji / retry)
-        rzad_przyciski = QtWidgets.QHBoxLayout()
-        rzad_przyciski.setSpacing(12)
-        self.btn_primary = QtWidgets.QPushButton("Ponów pomiar")
-        self.btn_primary.setStyleSheet(
-            "font-size:24px; padding:12px 18px; border-radius:16px; background:#2e7d32; color:white;"
-        )
-        self.btn_secondary = QtWidgets.QPushButton("Wprowadź PIN")
-        self.btn_secondary.setStyleSheet(
-            "font-size:24px; padding:12px 18px; border-radius:16px; background:#1565c0; color:white;"
-        )
-        rzad_przyciski.addWidget(self.btn_primary)
-        rzad_przyciski.addWidget(self.btn_secondary)
-        uklad_overlay.addLayout(rzad_przyciski)
-
-        # Pasek postępu dla pomiaru nadmuchowego
+        # Pasek postępu – będzie w kontenerze, który go ładnie wycentruje
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Fixed,
+        )
+        self.progress_bar.setFixedHeight(40)
         self.progress_bar.setStyleSheet(
             "QProgressBar {background-color: #444444; border-radius: 10px; color:white; font-size:24px;} "
             "QProgressBar::chunk { background-color: #00c853; }"
         )
-        self.progress_bar.setFixedHeight(30)
         self.progress_bar.hide()
-        uklad_overlay.addWidget(self.progress_bar)
+
+        self.progress_container = QtWidgets.QWidget()
+        progress_layout = QtWidgets.QVBoxLayout(self.progress_container)
+        progress_layout.setContentsMargins(40, 0, 40, 0)  # trochę luzu z boków
+        progress_layout.setSpacing(0)
+        progress_layout.addStretch(1)
+        progress_layout.addWidget(self.progress_bar)
+        progress_layout.addStretch(1)
+
+        self.center_stack.addWidget(self.progress_container)  # index 1
+
+        # To jest ten „duży prostokąt” – środkowa część paska na dole
+        uklad_overlay.addLayout(self.center_stack, 1)
+        self.center_stack.setCurrentWidget(self.lbl_center)
+
+
+        # Rząd przycisków (podczas decyzji / retry)
+        rzad_przyciski = QtWidgets.QHBoxLayout()
+        rzad_przyciski.setSpacing(12)
+
+        self.btn_primary = QtWidgets.QPushButton("Ponów pomiar")
+        self.btn_primary.setStyleSheet(
+            "font-size:24px; padding:12px 18px; border-radius:16px; "
+            "background:#2e7d32; color:white;"
+        )
+
+        self.btn_secondary = QtWidgets.QPushButton("Wprowadź PIN")
+        self.btn_secondary.setStyleSheet(
+            "font-size:24px; padding:12px 18px; border-radius:16px; "
+            "background:#1565c0; color:white;"
+        )
+
+        rzad_przyciski.addWidget(self.btn_primary)
+        rzad_przyciski.addWidget(self.btn_secondary)
+        uklad_overlay.addLayout(rzad_przyciski)
 
         uklad_zew.addWidget(self.overlay, 0)
 
@@ -424,7 +438,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-    def set_message(self, tekst_gora, tekst_srodek=None, color="white"):
+    def set_message(self, tekst_gora, tekst_srodek=None, color="white", use_center=True):
         """Ustaw tekst na górnym i środkowym pasku wraz z kolorem."""
         if color == "green":
             kolor_css = "#00ff00"
@@ -433,15 +447,21 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             kolor_css = "white"
 
+        # Górny pasek
         self.lbl_top.setText(tekst_gora)
         self.lbl_top.setStyleSheet(
             f"color:{kolor_css}; font-size:28px; font-weight:600;"
         )
 
-        self.lbl_center.setText(tekst_srodek or "")
-        self.lbl_center.setStyleSheet(
-            f"color:{kolor_css}; font-size:36px; font-weight:700;"
-        )
+        # Środkowy pasek (duży) – tylko jeśli chcemy pokazywać tekst, a nie progress bar
+        if use_center:
+            self.lbl_center.setText(tekst_srodek or "")
+            self.lbl_center.setStyleSheet(
+                f"color:{kolor_css}; font-size:36px; font-weight:700;"
+            )
+            if hasattr(self, "center_stack"):
+                self.center_stack.setCurrentWidget(self.lbl_center)
+
 
     def show_buttons(self, primary_text=None, secondary_text=None):
         """Pokaż lub ukryj przyciski z tekstami."""
@@ -489,6 +509,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.set_message(now_str(), "Podejdź bliżej", color="white")
         self.show_buttons(primary_text=None, secondary_text="Wprowadź PIN")
+                
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentWidget(self.lbl_center)
+
 
     def enter_detect(self):
         """Przejście do stanu DETECT."""
@@ -614,19 +638,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_timer(self.face_timer)
         self._stop_timer(self.ui_timer)
         self._stop_timer(self.identified_timer)
-        # Resetuj i pokaż pasek postępu
+
+        # Resetuj i pokaż pasek postępu w miejscu, gdzie normalnie jest tekst
         self.progress_bar.setValue(0)
         self.progress_bar.show()
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentWidget(self.progress_container)
 
-        # Uruchom timer pomiaru w odstępach ~100 ms
+        # Uruchom timer pomiaru w odstępach ~100 ms
         self.measure_timer.start(100)
 
-        self.set_message(
-            "Przeprowadzam pomiar…",
-            f"{CONFIG['measure_seconds']:.1f} s",
-            color="white",
-        )
+        # Tekst tylko na górze – środek zajmuje pasek
+        self.set_message("Przeprowadzam pomiar…", "", color="white", use_center=False)
+
         self.show_buttons(primary_text=None, secondary_text=None)
+
 
     @QtCore.pyqtSlot()
     def _measure_done(self):
@@ -636,8 +662,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def enter_decide(self, promille):
         """Podejmij decyzję na podstawie wyniku pomiaru."""
-        # Ukryj pasek postępu po zakończeniu pomiaru
-        self.progress_bar.hide()
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentWidget(self.lbl_center)
+
 
         self.last_promille = float(promille)
 
@@ -719,10 +746,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         dist_cm = self.read_distance_cm()
         imie = self.current_emp_name or ""
-        if dist_cm == float("inf"):
-            dist_txt = "brak odczytu"
-        elif dist_cm > 80:
-            dist_txt = ">80 cm"
+        if dist_cm > 70:
+            dist_txt = ">1m"
         else:
             dist_txt = f"{dist_cm:0.0f} cm"
 
@@ -772,31 +797,31 @@ class MainWindow(QtWidgets.QMainWindow):
             and amp >= self.mic_threshold
         )
 
+        # Jeśli faktycznie dmucha, liczymy czas i zbieramy próbki
         if blow_detected:
             self.blow_elapsed += dt
-            # Pobierz próbkę z MQ-3 tylko podczas dmuchania
             try:
                 self.measure_samples.append(self.mq3.read_raw())
             except Exception:
                 pass
 
-        remaining = CONFIG["measure_seconds"] - self.blow_elapsed
-        if remaining < 0:
-            remaining = 0.0
-
-        # Aktualizacja paska postępu
+        # Aktualizacja paska postępu (zależna od blow_elapsed)
         progress = max(0.0, min(self.blow_elapsed / CONFIG["measure_seconds"], 1.0))
         self.progress_bar.setValue(int(progress * 100))
         self.progress_bar.show()
 
-        # Aktualizacja komunikatu zależnie od warunków
+        # Upewnij się, że w centrum widać pasek (jakby coś go przestawiło)
+        if hasattr(self, "center_stack"):
+            self.center_stack.setCurrentWidget(self.progress_container)
+
+        # Komunikaty – tylko górny pasek, środek = progress bar
         if blow_detected:
-            self.set_message("Przeprowadzam pomiar…", f"{remaining:0.1f} s", color="white")
+            self.set_message("Przeprowadzam pomiar…", "", color="white", use_center=False)
         else:
             if not (self.distance_min_cm <= dist_cm <= self.distance_max_cm):
-                self.set_message("Podejdź bliżej", f"{remaining:0.1f} s", color="white")
+                self.set_message("Podejdź bliżej", "", color="white", use_center=False)
             else:
-                self.set_message("Dmuchaj", f"{remaining:0.1f} s", color="white")
+                self.set_message("Dmuchaj", "", color="white", use_center=False)
 
         # Zakończenie pomiaru po osiągnięciu wymaganego czasu nadmuchu
         if self.blow_elapsed >= CONFIG["measure_seconds"]:
