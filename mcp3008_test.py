@@ -4,7 +4,7 @@ from sensors import MCP3008
 
 adc = MCP3008(0, 0)
 # 0 - mq3 | 1 - distance sensor | 2 - microphone / pressure sensore
-CH = 0
+CH = 2
 
 print("Cisza / dmuchanie / krzyk – patrzymy na amp")
 try:

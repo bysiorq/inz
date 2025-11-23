@@ -65,9 +65,9 @@ CONFIG = {
     "admin_username": "admin",
     "admin_password": "admin123",
 
-    # --- MongoDB Atlas: logi pomiarów ---
-    "mongo_uri": os.environ.get("MONGO_URI"),  # Atlas string z ENV
-    "mongodb_db_name": os.environ.get("MONGODB_DB_NAME"),
+
+    "mongo_uri": os.environ.get("MONGO_URI", ""),
+    "mongodb_db_name": os.environ.get("MONGODB_DB_NAME", "alkotester"),
     # "mongo_uri": "mongodb://localhost:27017",
     # "mongodb_db_name": "alkotester",
 

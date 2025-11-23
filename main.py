@@ -1016,21 +1016,34 @@ class MainWindow(QtWidgets.QMainWindow):
     def _log_to_mongo_async(self, ts, emp_id, emp_name, emp_pin, promille, pass_ok: bool):
         global _MONGO_CLIENT, _MONGO_DISABLED
 
+        # Jeżeli klient PyMongo nie jest dostępny lub logowanie zostało wyłączone
+        # (np. po błędzie), odpuszczamy logowanie.
         if MongoClient is None or _MONGO_DISABLED:
             return
+
+        # Sprawdź, czy konfiguracja Mongo zawiera URI i nazwę bazy.
+        mongo_uri = CONFIG.get("mongo_uri") or ""
+        db_name = CONFIG.get("mongodb_db_name") or "alkotester"
+        # Jeśli URI jest pusty, nie próbuj łączyć się z bazą.
+        if not mongo_uri:
+            return
+
 
         def worker():
             global _MONGO_CLIENT, _MONGO_DISABLED
             try:
                 if _MONGO_CLIENT is None:
                     _MONGO_CLIENT = MongoClient(
-                        CONFIG.get("mongo_uri"),
+                        mongo_uri,
                         serverSelectionTimeoutMS=5000,  # 5 s na znalezienie primary
                         connectTimeoutMS=5000,
                         socketTimeoutMS=5000,
                     )
 
-                db = _MONGO_CLIENT[CONFIG.get("mongodb_db_name", "alkotester")]
+                # Użyj nazwy bazy jako ciąg znaków. Jeśli w CONFIG jest None,
+                # skorzystaj z domyślnej wartości „alkotester” zdefiniowanej powyżej.
+                db = _MONGO_CLIENT[db_name]
+
                 col = db["entries"]
                 doc = {
                     "datetime": ts,

@@ -1,0 +1,57 @@
+*** Begin Patch
+*** Update File: config.py
+@@
+-    # --- MongoDB Atlas: logi pomiarów ---
+-    "mongo_uri": os.environ.get("MONGO_URI"),  # Atlas string z ENV
+-    "mongodb_db_name": os.environ.get("MONGODB_DB_NAME"),
+-    # "mongo_uri": "mongodb://localhost:27017",
+-    # "mongodb_db_name": "alkotester",
++    # --- MongoDB Atlas: logi pomiarów ---
++    # Pobierz wartości z ENV, ale zapewnij sensowne domyślne.  
++    # Jeśli zmienne środowiskowe MONGO_URI lub MONGODB_DB_NAME nie są ustawione,
++    # to 'mongo_uri' będzie pustym stringiem, a nazwa bazy 'alkotester'.
++    # Dzięki temu PyMongo nie dostanie None jako nazwy bazy, co powoduje błąd
++    # "name must be an instance of str".  
++    "mongo_uri": os.environ.get("MONGO_URI", ""),
++    "mongodb_db_name": os.environ.get("MONGODB_DB_NAME", "alkotester"),
++    # "mongo_uri": "mongodb://localhost:27017",
++    # "mongodb_db_name": "alkotester",
+*** End Patch
+*** Update File: main.py
+@@ def _log_to_mongo_async(self, ts, emp_id, emp_name, emp_pin, promille, pass_ok: bool):
+-        if MongoClient is None or _MONGO_DISABLED:
+-            return
++
++        # Jeżeli klient PyMongo nie jest dostępny lub logowanie zostało wyłączone
++        # (np. po błędzie), odpuszczamy logowanie.
++        if MongoClient is None or _MONGO_DISABLED:
++            return
++
++        # Sprawdź, czy konfiguracja Mongo zawiera URI i nazwę bazy.
++        mongo_uri = CONFIG.get("mongo_uri") or ""
++        db_name = CONFIG.get("mongodb_db_name") or "alkotester"
++        # Jeśli URI jest pusty, nie próbuj łączyć się z bazą.
++        if not mongo_uri:
++            return
+@@ def _log_to_mongo_async(self, ts, emp_id, emp_name, emp_pin, promille, pass_ok: bool):
+-                if _MONGO_CLIENT is None:
+-                    _MONGO_CLIENT = MongoClient(
+-                        CONFIG.get("mongo_uri"),
+-                        serverSelectionTimeoutMS=5000,  # 5 s na znalezienie primary
+-                        connectTimeoutMS=5000,
+-                        socketTimeoutMS=5000,
+-                    )
+-
+-                db = _MONGO_CLIENT[CONFIG.get("mongodb_db_name", "alkotester")]
++                if _MONGO_CLIENT is None:
++                    _MONGO_CLIENT = MongoClient(
++                        mongo_uri,
++                        serverSelectionTimeoutMS=5000,  # 5 s na znalezienie primary
++                        connectTimeoutMS=5000,
++                        socketTimeoutMS=5000,
++                    )
++
++                # Użyj nazwy bazy jako ciąg znaków. Jeśli w CONFIG jest None,
++                # skorzystaj z domyślnej wartości „alkotester” zdefiniowanej powyżej.
++                db = _MONGO_CLIENT[db_name]
+*** End Patch
