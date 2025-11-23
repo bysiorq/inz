@@ -199,7 +199,7 @@ def _auth_source_from_fallback(fallback_flag: int | bool) -> str:
         flag = int(fallback_flag)
     except Exception:
         flag = 0
-    return "PIN (fallback)" if flag else "AI"
+    return "PIN" if flag else "SI"
 
 
 def _load_entries_from_csv() -> List[Dict[str, Any]]:
