@@ -32,7 +32,7 @@ except Exception:
     MongoClient = None
 
 _MONGO_CLIENT = None
-_MONGO_DISABLED = False
+
 
 
 def _face_quality(szare_roi):
@@ -237,11 +237,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.calibrate_seen_face = False
 
         self.measure_samples = []
+        self.measure_retry_count = 0  
 
         self.post_training_action = None
         
-        # Dodatkowe zmienne dla pomiaru nadmuchowego
         self.distance_channel = CONFIG.get("distance_channel", 1)
+
         self.mic_channel = CONFIG.get("mic_channel", 2)
         self.distance_min_cm = CONFIG.get("distance_min_cm", 15.0)
         self.distance_max_cm = CONFIG.get("distance_max_cm", 20.0)
@@ -512,6 +513,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.measure_samples = []
         self.blow_elapsed = 0.0
+        self.measure_retry_count = 0
+
 
         self.progress_bar.hide()
 
@@ -717,9 +720,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.last_promille <= thr_pass:
             result_pass = True
         elif self.last_promille < thr_deny:
-            result_retry = True
+            # strefa "niejednoznaczna"
+            if self.measure_retry_count >= 1:
+                # drugi raz w tej strefie – bez kolejnego ponowienia, traktujemy jak odmowę
+                result_retry = False
+                result_pass = False
+            else:
+                # pierwsze wejście w strefę niejednoznaczną – pozwól na jedno ponowienie
+                result_retry = True
         else:
             result_pass = False
+
 
         # Zaktualizuj interfejs i steruj bramką/LED w zależności od wyniku
         if result_pass and not result_retry:
@@ -863,7 +874,19 @@ class MainWindow(QtWidgets.QMainWindow):
     # ----- Przycisk primary -----
     def on_btn_primary(self):
         if self.state == "RETRY":
+            # tylko jedno ponowienie pomiaru
+            if self.measure_retry_count >= 1:
+                # już było jedno ponowienie – ignorujemy przycisk
+                return
+            self.measure_retry_count += 1
             self.enter_measure()
+
+        elif self.state == "PIN_FAIL_CHOOSE":
+            # użytkownik chce przejść do pomiaru po nieudanym zebraniu próbek twarzy
+            # traktujemy to jako fallback po PIN (bez AI)
+            self.fallback_pin_flag = True
+            self.enter_identified_wait()
+
 
     # ----- Przycisk secondary -----
     def on_btn_secondary(self):
@@ -875,8 +898,14 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.QTimer.singleShot(2000, self.enter_idle)
             return
 
+        if self.state == "PIN_FAIL_CHOOSE":
+            # użytkownik rezygnuje – wracamy do ekranu startowego
+            self.enter_idle()
+            return
+
         if self.state in ("IDLE", "DETECT"):
             self.enter_pin_entry()
+
 
     # ----- Zbieranie próbek twarzy po PIN -----
     def collect_new_shots_for_current_emp(self):
@@ -904,13 +933,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
             if time.time() > deadline:
                 self.last_face_bbox = None
+                # nowy stan – użytkownik decyduje, czy mimo braku próbek twarzy
+                # przejść do pomiaru tylko na podstawie PIN
+                self.state = "PIN_FAIL_CHOOSE"
                 self.set_message(
                     "Nie udało się zebrać próbek",
-                    "Spróbuj ponownie",
+                    "Przejść do pomiaru na podstawie PIN?",
                     color="red",
                 )
-                QtCore.QTimer.singleShot(2000, self.enter_idle)
+                self.show_buttons(
+                    primary_text="Przejdź do pomiaru",
+                    secondary_text="Anuluj",
+                )
                 return
+
 
             if self.frame_last_bgr is None:
                 QtCore.QTimer.singleShot(80, tick)
@@ -1026,62 +1062,12 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.enter_detect()
 
-    def _log_to_mongo_async(self, ts, emp_id, emp_name, emp_pin, promille, pass_ok: bool):
-        global _MONGO_CLIENT, _MONGO_DISABLED
-
-        # Jeżeli klient PyMongo nie jest dostępny lub logowanie zostało wyłączone
-        # (np. po błędzie), odpuszczamy logowanie.
-        if MongoClient is None or _MONGO_DISABLED:
-            return
-
-        # Sprawdź, czy konfiguracja Mongo zawiera URI i nazwę bazy.
-        mongo_uri = CONFIG.get("mongo_uri") or ""
-        db_name = CONFIG.get("mongodb_db_name") or "alkotester"
-        # Sprawdź, czy URI jest ustawione
-        print(f"[MongoDebug] Próba logu do Mongo, mongo_uri={mongo_uri!r}")
-        if not mongo_uri:
-            print("[MongoDebug] Brak mongo_uri w konfiguracji - zapis tylko do CSV.")
-            return
-
-        # Jeśli URI jest pusty, nie próbuj łączyć się z bazą.
-        if not mongo_uri:
-            return
-
-
-        def worker():
-            global _MONGO_CLIENT, _MONGO_DISABLED
-            try:
-                if _MONGO_CLIENT is None:
-                    _MONGO_CLIENT = MongoClient(
-                        mongo_uri,
-                        serverSelectionTimeoutMS=5000,  # 5 s na znalezienie primary
-                        connectTimeoutMS=5000,
-                        socketTimeoutMS=5000,
-                    )
-
-                # Użyj nazwy bazy jako ciąg znaków. Jeśli w CONFIG jest None,
-                # skorzystaj z domyślnej wartości „alkotester” zdefiniowanej powyżej.
-                db = _MONGO_CLIENT[db_name]
-
-                col = db["entries"]
-                doc = {
-                    "datetime": ts,
-                    "employee_id": emp_id,
-                    "employee_name": emp_name,
-                    "employee_pin": emp_pin,
-                    "promille": float(promille),
-                    "result": "pass" if pass_ok else "deny",
-                    "fallback_pin": bool(self.fallback_pin_flag),
-                }
-                col.insert_one(doc)
-            except Exception as e:
-                print(f"[Mongo] wyłączam logowanie do Mongo po błędzie: {e}")
-                _MONGO_DISABLED = True
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    # ----- bramka + logi -----
+        # ----- bramka + logi -----
     def trigger_gate_and_log(self, pass_ok: bool, promille: float):
+        """
+        Steruje bramką, zapisuje logi do CSV oraz wysyła log do MongoDB.
+        Przy odmowie generuje PDF + mail.
+        """
         # Tryb Gość: nie logujemy nic do plików ani Mongo,
         # ale możemy nadal sterować bramką na podstawie wyniku.
         if self.is_guest:
@@ -1100,7 +1086,6 @@ class MainWindow(QtWidgets.QMainWindow):
         emp_id = self.current_emp_id or "<none>"
         ts = datetime.now().isoformat()
 
-
         # Obsługa bramki
         if pass_ok:
             GPIO.output(CONFIG["gate_gpio"], GPIO.HIGH)
@@ -1111,23 +1096,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
             threading.Thread(target=pulse, daemon=True).start()
 
+            # Log zdarzenia przejścia
             log_csv(
                 os.path.join(CONFIG["logs_dir"], "events.csv"),
                 ["datetime", "event", "employee_name", "employee_id"],
-                [ts, "gate_open", emp_name, emp_id]
+                [ts, "gate_open", emp_name, emp_id],
             )
         else:
+            # Log odmowy
             log_csv(
                 os.path.join(CONFIG["logs_dir"], "events.csv"),
                 ["datetime", "event", "employee_name", "employee_id"],
-                [ts, "deny_access", emp_name, emp_id]
+                [ts, "deny_access", emp_name, emp_id],
             )
 
-        # Zapisz pomiar do pliku - zawsze lokalny CSV
+        # Zapisz pomiar do pliku – zawsze lokalny CSV
         log_csv(
             os.path.join(CONFIG["logs_dir"], "measurements.csv"),
             ["datetime", "employee_name", "employee_id", "promille", "fallback_pin"],
-            [ts, emp_name, emp_id, f"{promille:.3f}", int(self.fallback_pin_flag)]
+            [ts, emp_name, emp_id, f"{promille:.3f}", int(self.fallback_pin_flag)],
         )
 
         # PIN pracownika do logu w Mongo
@@ -1139,12 +1126,17 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             emp_pin = None
 
+        # Log do MongoDB (pass + deny)
+        try:
+            self._log_to_mongo_async(ts, emp_id, emp_name, emp_pin, promille, pass_ok)
+        except Exception as e:
+            print(f"[MongoDebug] Błąd przy uruchamianiu logu do Mongo: {e}")
+
         # Mail do szefa przy odmowie wejścia
         if not pass_ok:
             snapshot = None
             try:
-                # Najpierw spróbuj użyć klatki z etapu detekcji (z twarzą),
-                # a dopiero jak jej brak - ostatniej klatki z kamery.
+                # najpierw klatka z detekcji (z twarzą), jak brak – ostatnia z kamery
                 if self.last_detect_frame_bgr is not None:
                     snapshot = self.last_detect_frame_bgr.copy()
                 elif self.frame_last_bgr is not None:
@@ -1156,6 +1148,60 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._send_deny_email_async(ts, emp_id, emp_name, promille, snapshot)
             except Exception as e:
                 print(f"[EMAIL] Błąd przy uruchamianiu wysyłki maila: {e}")
+
+
+    def _log_to_mongo_async(self, ts, emp_id, emp_name, emp_pin, promille, pass_ok: bool):
+        # Jeżeli PyMongo nie jest dostępne – odpuszczamy.
+        if MongoClient is None:
+            print("[MongoDebug] Brak biblioteki pymongo – pomijam logowanie do Mongo.")
+            return
+
+        mongo_uri = CONFIG.get("mongo_uri") or ""
+        db_name = CONFIG.get("mongodb_db_name") or "alkotester"
+
+        print(f"[MongoDebug] Queue log to Mongo, uri set={bool(mongo_uri)}, db={db_name!r}")
+
+        if not mongo_uri:
+            print("[MongoDebug] Brak mongo_uri w konfiguracji – zapis tylko do CSV.")
+            return
+
+        def worker():
+            global _MONGO_CLIENT
+            try:
+                print("[MongoDebug] Worker start")
+
+                if _MONGO_CLIENT is None:
+                    print("[MongoDebug] Tworzę nowy MongoClient...")
+                    _MONGO_CLIENT = MongoClient(
+                        mongo_uri,
+                        serverSelectionTimeoutMS=5000,
+                        connectTimeoutMS=5000,
+                        socketTimeoutMS=5000,
+                    )
+                    # Wymuś jedno zapytanie do serwera, żeby od razu złapać błąd połączenia:
+                    _MONGO_CLIENT.admin.command("ping")
+                    print("[MongoDebug] Połączenie z Mongo OK")
+
+                db = _MONGO_CLIENT[db_name]
+                col = db["entries"]
+                doc = {
+                    "datetime": ts,
+                    "employee_id": emp_id,
+                    "employee_name": emp_name,
+                    "employee_pin": emp_pin,
+                    "promille": float(promille),
+                    "result": "pass" if pass_ok else "deny",
+                    "fallback_pin": bool(self.fallback_pin_flag),
+                }
+                result = col.insert_one(doc)
+                print(f"[MongoDebug] insert_one OK, _id={result.inserted_id}")
+            except Exception as e:
+                import traceback
+                print("[Mongo] Błąd logowania do Mongo:")
+                traceback.print_exc()
+                # NIE ustawiamy już żadnej flagi wyłączającej – kolejne próby dalej będą wysyłane
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
     def _send_deny_email_async(self, ts, emp_id, emp_name, promille, frame_bgr):
