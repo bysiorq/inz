@@ -22,4 +22,4 @@ COPY . .
 EXPOSE 8000
 
 # 6. Komenda startowa – produkcyjnie używamy gunicorn
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "admin_server:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "server.admin_server:app"]
