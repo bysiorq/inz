@@ -65,7 +65,7 @@ CONFIG = {
     "admin_password": "admin123",
 
     # --- MongoDB Atlas: logi pomiarów ---
-    "mongo_uri": "mongodb+srv://kamilox123000_db_user:Mos9YrkkJYx5WW2a@alkotesterdb.bfua4dg.mongodb.net/alkotester?retryWrites=true&w=majority&appName=AlkotesterDB",
+    "mongo_uri": "",
     "mongodb_db_name": "alkotester",
     # "mongo_uri": "mongodb://localhost:27017",
     # "mongodb_db_name": "alkotester",
