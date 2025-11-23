@@ -1,25 +1,19 @@
 FROM python:3.12-slim
 
-# 1. Podstawowe ustawienia
-ENV PYTHONDONTWRITEBYTECODE=1
+# Żeby logi od razu leciały na stdout
 ENV PYTHONUNBUFFERED=1
 
-WORKDIR /server
+WORKDIR /app
 
-# 2. Systemowe zależności (certyfikaty TLS itd.)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# 3. Python dependencies
+# Najpierw zależności
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. Aplikacja
+# Potem reszta kodu
 COPY . .
 
-# 5. Port kontenera (wewnątrz)
-EXPOSE 8000
+# Northflank zwykle daje PORT w ENV, a Twój run_server go używa
+# (port = int(os.environ.get("PORT", CONFIG.get("admin_port", 8000))))
+# więc nie musimy nic hardcodować.
 
-# 6. Komenda startowa – produkcyjnie używamy gunicorn
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "admin_server:app"]
+CMD ["python", "admin_server.py"]
