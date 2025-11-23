@@ -226,7 +226,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.measure_samples = []
 
         self.post_training_action = None
-
+        
         # Dodatkowe zmienne dla pomiaru nadmuchowego
         self.distance_channel = CONFIG.get("distance_channel", 1)
         self.mic_channel = CONFIG.get("mic_channel", 2)
@@ -662,8 +662,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def enter_decide(self, promille):
         """Podejmij decyzję na podstawie wyniku pomiaru."""
+        self.progress_bar.hide()
         if hasattr(self, "center_stack"):
             self.center_stack.setCurrentWidget(self.lbl_center)
+            self.lbl_center.setWordWrap(True)
+
 
 
         self.last_promille = float(promille)

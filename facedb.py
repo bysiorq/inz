@@ -1,20 +1,3 @@
-"""
-facedb.py
-=========
-
-Moduł implementuje prostą bazę twarzy (FaceDB) opartą na plikach
-umożliwiającą rejestrowanie pracowników, przechowywanie przyciętych
-zrzutów twarzy oraz indeksowanie deskryptorów ORB do rozpoznawania.
-Detekcja twarzy realizowana jest najpierw przez YuNet (jeśli model
-jest dostępny), z fallbackiem do klasycznego Haar Cascades.  Kiedy
-FaceDB jest inicjalizowana, ładuje listę pracowników z pliku
-``employees.json`` oraz indeks deskryptorów dla każdego z nich z
-``index_dir``.
-
-Uwaga: klasy i metody mają nazwy angielskie, aby nie łamać importów
-w innych modułach, ale kod wewnętrzny używa polskich nazw zmiennych.
-"""
-
 import os
 import glob
 import json

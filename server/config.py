@@ -7,7 +7,7 @@ CONFIG = {
     "admin_username": os.environ.get("ADMIN_USERNAME", "admin"),
     "admin_password": os.environ.get("ADMIN_PASSWORD", "admin"),
 
-    "mongo_uri": os.environ.get("MONGO_URI", ""),
+    "mongo_uri": os.environ.get("MONGO_URI", "mongodb+srv://kamilox123000_db_user:Mos9YrkkJYx5WW2a@alkotesterdb.bfua4dg.mongodb.net/alkotester?retryWrites=true&w=majority&appName=AlkotesterDB"),
     "mongodb_db_name": os.environ.get("MONGODB_DB_NAME", "alkotester"),
 
     "employees_json": os.path.join(BASE_DIR, "employees.json"),
