@@ -7,6 +7,7 @@ CONFIG = {
     "admin_username": os.environ.get("ADMIN_USERNAME", "admin"),
     "admin_password": os.environ.get("ADMIN_PASSWORD", "admin"),
 
+    # Atlas string z ENV (może być pusty, wtedy lecisz na CSV)
     "mongo_uri": os.environ.get("MONGO_URI", ""),
     "mongodb_db_name": os.environ.get("MONGODB_DB_NAME", "alkotester"),
 
