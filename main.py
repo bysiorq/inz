@@ -9,6 +9,13 @@ import requests
 import numpy as np
 from datetime import datetime
 
+import smtplib
+import io
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
 from PyQt5 import QtCore, QtGui, QtWidgets
 import RPi.GPIO as GPIO
 
@@ -85,7 +92,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             print(f"[SYNC] Błąd sync przy starcie: {e}")
 
-        self.setWindowTitle("Alkotester – Raspberry Pi")
+        self.setWindowTitle("Alkotester - Raspberry Pi")
 
         if CONFIG["hide_cursor"]:
             self.setCursor(QtCore.Qt.BlankCursor)
@@ -137,7 +144,7 @@ class MainWindow(QtWidgets.QMainWindow):
         top_row.addWidget(self.btn_guest)
         uklad_overlay.addLayout(top_row)
 
-        # Centralny obszar: albo napis, albo pasek postępu – w tym samym miejscu
+        # Centralny obszar: albo napis, albo pasek postępu - w tym samym miejscu
         self.center_stack = QtWidgets.QStackedLayout()
         self.center_stack.setContentsMargins(0, 0, 0, 0)
         self.center_stack.setSpacing(0)
@@ -148,7 +155,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lbl_center.setStyleSheet("color:white; font-size:36px; font-weight:700;")
         self.center_stack.addWidget(self.lbl_center)  # index 0
 
-        # Pasek postępu – będzie w kontenerze, który go ładnie wycentruje
+        # Pasek postępu - będzie w kontenerze, który go ładnie wycentruje
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -173,7 +180,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.center_stack.addWidget(self.progress_container)  # index 1
 
-        # To jest ten „duży prostokąt” – środkowa część paska na dole
+        # To jest ten „duży prostokąt” - środkowa część paska na dole
         uklad_overlay.addLayout(self.center_stack, 1)
         self.center_stack.setCurrentWidget(self.lbl_center)
 
@@ -216,6 +223,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.last_promille = 0.0
 
         self.frame_last_bgr = None
+        self.last_detect_frame_bgr = None
+
 
         self.detect_fail_count = 0
         self.detect_retry_count = 0
@@ -275,7 +284,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_primary.clicked.connect(self.on_btn_primary)
         self.btn_secondary.clicked.connect(self.on_btn_secondary)
 
-        # Komunikat startowy – kalibracja MQ-3
+        # Komunikat startowy - kalibracja MQ-3
         self.set_message(
             "Proszę czekać…",
             "Kalibracja czujnika MQ-3 w toku",
@@ -293,7 +302,7 @@ class MainWindow(QtWidgets.QMainWindow):
         Przytnij obraz tak, żeby zachować proporcje, a potem przeskaluj
         do (target_w, target_h), wypełniając cały label (bez czarnych pasów).
 
-        img – numpy array w RGB (h, w, 3)
+        img - numpy array w RGB (h, w, 3)
         Zwraca: przeskalowany obraz RGB lub None gdy coś jest nie tak.
         """
         if img is None or target_w <= 0 or target_h <= 0:
@@ -306,7 +315,7 @@ class MainWindow(QtWidgets.QMainWindow):
         src_ar = w / float(h)
         dst_ar = target_w / float(target_h)
 
-        # Jeśli źródło szersze niż docelowy prostokąt – przytnij boki.
+        # Jeśli źródło szersze niż docelowy prostokąt - przytnij boki.
         if src_ar > dst_ar:
             new_w = int(h * dst_ar)
             if new_w <= 0:
@@ -315,7 +324,7 @@ class MainWindow(QtWidgets.QMainWindow):
             x2 = x1 + new_w
             crop = img[:, x1:x2]
         else:
-            # Źródło „wyższe” – przytnij górę/dół.
+            # Źródło „wyższe” - przytnij górę/dół.
             new_h = int(w / dst_ar)
             if new_h <= 0:
                 return None
@@ -346,7 +355,7 @@ class MainWindow(QtWidgets.QMainWindow):
             employees_path = os.path.join(base_dir, employees_path)
 
         if not base_url:
-            print("[SYNC] Brak server_base_url w CONFIG – pomijam sync.")
+            print("[SYNC] Brak server_base_url w CONFIG - pomijam sync.")
             return
 
         url = f"{base_url.rstrip('/')}/api/employees_public"
@@ -360,7 +369,7 @@ class MainWindow(QtWidgets.QMainWindow):
             resp.raise_for_status()
             data = resp.json()
             if not isinstance(data, dict):
-                print("[SYNC] Odpowiedź nie jest dict-em – pomijam.")
+                print("[SYNC] Odpowiedź nie jest dict-em - pomijam.")
                 return
 
             employees = data.get("employees", [])
@@ -383,7 +392,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _online_learn_face(self, emp_id: str):
         """
-        Doincrementalne uczenie twarzy – dociągamy pojedynczą klatkę
+        Doincrementalne uczenie twarzy - dociągamy pojedynczą klatkę
         i dokładamy próbkę do bazy, jeśli jest wystarczająco dobra.
         """
         try:
@@ -457,7 +466,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"color:{kolor_css}; font-size:28px; font-weight:600;"
         )
 
-        # Środkowy pasek (duży) – tylko jeśli chcemy pokazywać tekst, a nie progress bar
+        # Środkowy pasek (duży) - tylko jeśli chcemy pokazywać tekst, a nie progress bar
         if use_center:
             self.lbl_center.setText(tekst_srodek or "")
             self.lbl_center.setStyleSheet(
@@ -558,7 +567,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
             emp = self.facedb.emp_by_pin.get(pin)
             if not emp:
-                self.set_message("Zły PIN – brak danych", "", color="red")
+                self.set_message("Zły PIN - brak danych", "", color="red")
                 self.show_buttons(primary_text=None, secondary_text=None)
                 QtCore.QTimer.singleShot(2000, self.enter_idle)
                 return
@@ -597,7 +606,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         self.state = "IDENTIFIED_WAIT"
 
-        # Reset flag kalibracji twarzy – będą aktualizowane w on_face_tick
+        # Reset flag kalibracji twarzy - będą aktualizowane w on_face_tick
         self.calibrate_good_face = False
         self.calibrate_seen_face = False
 
@@ -652,7 +661,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Uruchom timer pomiaru w odstępach ~100 ms
         self.measure_timer.start(100)
 
-        # Tekst tylko na górze – środek zajmuje pasek
+        # Tekst tylko na górze - środek zajmuje pasek
         self.set_message("Przeprowadzam pomiar…", "", color="white", use_center=False)
 
         self.show_buttons(primary_text=None, secondary_text=None)
@@ -686,7 +695,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if thr_pass > thr_deny:
             print(
-                f"[WARN] threshold_pass ({thr_pass}) > threshold_deny ({thr_deny}) – zamieniam kolejność"
+                f"[WARN] threshold_pass ({thr_pass}) > threshold_deny ({thr_deny}) - zamieniam kolejność"
             )
             thr_pass, thr_deny = thr_deny, thr_pass
 
@@ -763,7 +772,7 @@ class MainWindow(QtWidgets.QMainWindow):
             # Kamera widziała sensowną twarz (ustawiane w on_face_tick)
             if self.calibrate_good_face or self.fallback_pin_flag:
                 self._stop_timer(self.identified_timer)
-                tekst_gora = "Nie ruszaj się – start pomiaru"
+                tekst_gora = "Nie ruszaj się - start pomiaru"
                 tekst_srodek = f"Cześć {imie}\nOdległość: {dist_txt}"
                 self.set_message(tekst_gora, tekst_srodek, color="white")
                 self.enter_measure()
@@ -777,7 +786,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 return
 
-        # Poza zakresem – prosimy o podejście bliżej
+        # Poza zakresem - prosimy o podejście bliżej
         self.set_message(
             "Podejdź bliżej",
             f"Cześć {imie}\nOdległość: {dist_txt}",
@@ -821,7 +830,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "center_stack"):
             self.center_stack.setCurrentWidget(self.progress_container)
 
-        # Komunikaty – tylko górny pasek, środek = progress bar
+        # Komunikaty - tylko górny pasek, środek = progress bar
         if blow_detected:
             self.set_message("Przeprowadzam pomiar…", "", color="white", use_center=False)
         else:
@@ -1031,7 +1040,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Sprawdź, czy URI jest ustawione
         print(f"[MongoDebug] Próba logu do Mongo, mongo_uri={mongo_uri!r}")
         if not mongo_uri:
-            print("[MongoDebug] Brak mongo_uri w konfiguracji – zapis tylko do CSV.")
+            print("[MongoDebug] Brak mongo_uri w konfiguracji - zapis tylko do CSV.")
             return
 
         # Jeśli URI jest pusty, nie próbuj łączyć się z bazą.
@@ -1114,7 +1123,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 [ts, "deny_access", emp_name, emp_id]
             )
 
-        # Zapisz pomiar do pliku – zawsze lokalny CSV
+        # Zapisz pomiar do pliku - zawsze lokalny CSV
         log_csv(
             os.path.join(CONFIG["logs_dir"], "measurements.csv"),
             ["datetime", "employee_name", "employee_id", "promille", "fallback_pin"],
@@ -1130,8 +1139,196 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:
             emp_pin = None
 
-        # Asynchroniczne logowanie do Mongo (nie blokuje RPi)
-        self._log_to_mongo_async(ts, emp_id, emp_name, emp_pin, promille, pass_ok)
+        # Mail do szefa przy odmowie wejścia
+        if not pass_ok:
+            snapshot = None
+            try:
+                # Najpierw spróbuj użyć klatki z etapu detekcji (z twarzą),
+                # a dopiero jak jej brak - ostatniej klatki z kamery.
+                if self.last_detect_frame_bgr is not None:
+                    snapshot = self.last_detect_frame_bgr.copy()
+                elif self.frame_last_bgr is not None:
+                    snapshot = self.frame_last_bgr.copy()
+            except Exception:
+                snapshot = None
+
+            try:
+                self._send_deny_email_async(ts, emp_id, emp_name, promille, snapshot)
+            except Exception as e:
+                print(f"[EMAIL] Błąd przy uruchamianiu wysyłki maila: {e}")
+
+
+    def _send_deny_email_async(self, ts, emp_id, emp_name, promille, frame_bgr):
+        """
+        Asynchroniczna wysyłka maila z PDF-em i zdjęciem z odmowy wejścia.
+        """
+        def worker():
+            try:
+                self._send_deny_email(ts, emp_id, emp_name, promille, frame_bgr)
+            except Exception as e:
+                print(f"[EMAIL] Błąd wysyłki maila: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _send_deny_email(self, ts, emp_id, emp_name, promille, frame_bgr):
+        # Konfiguracja SMTP z CONFIG
+        smtp_host = CONFIG.get("smtp_host")
+        if not smtp_host:
+            print("[EMAIL] Brak smtp_host w CONFIG - pomijam wysyłkę maila.")
+            return
+
+        smtp_port = int(CONFIG.get("smtp_port", 587))
+        smtp_user = CONFIG.get("smtp_user") or ""
+        smtp_password = CONFIG.get("smtp_password") or ""
+        smtp_use_tls = bool(CONFIG.get("smtp_use_tls", True))
+        from_addr = CONFIG.get("smtp_from") or smtp_user or "alkotester@localhost"
+        to_addr = CONFIG.get("alert_email_to")
+
+        if not to_addr:
+            print("[EMAIL] Brak alert_email_to w CONFIG - pomijam wysyłkę maila.")
+            return
+
+        # Spróbuj wygenerować PDF
+        pdf_path = self._create_deny_pdf(ts, emp_id, emp_name, promille, frame_bgr)
+        if pdf_path is None:
+            print("[EMAIL] Nie udało się wygenerować PDF - nie wysyłam maila.")
+            return
+
+        subject = f"Odmowa wejścia - {emp_name} ({promille:.3f} ‰)"
+        body = (
+            "System Alkotester - odmowa wejścia na obiekt.\n\n"
+            f"Data i czas: {ts}\n"
+            f"Pracownik: {emp_name} (ID: {emp_id})\n"
+            f"Wynik pomiaru: {promille:.3f} [‰]\n"
+        )
+
+        msg = MIMEMultipart()
+        msg["Subject"] = subject
+        msg["From"] = from_addr
+        msg["To"] = to_addr
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        # Załącznik PDF
+        try:
+            with open(pdf_path, "rb") as f:
+                part = MIMEBase("application", "pdf")
+                part.set_payload(f.read())
+            encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                f'attachment; filename="{os.path.basename(pdf_path)}"',
+            )
+            msg.attach(part)
+        except Exception as e:
+            print(f"[EMAIL] Nie udało się dołączyć PDF-a: {e}")
+            return
+
+        # Wysłanie maila
+        try:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
+                if smtp_use_tls:
+                    server.starttls()
+                if smtp_user and smtp_password:
+                    server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+            print(f"[EMAIL] Wysłano mail o odmowie na {to_addr} z PDF-em {pdf_path}")
+        except Exception as e:
+            print(f"[EMAIL] Błąd SMTP: {e}")
+
+    def _create_deny_pdf(self, ts, emp_id, emp_name, promille, frame_bgr):
+        """
+        Tworzy prosty PDF z informacją o odmowie i osadzonym zdjęciem z kamery.
+        Zwraca ścieżkę do PDF lub None w razie problemu.
+        """
+        try:
+            from reportlab.pdfgen import canvas
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.utils import ImageReader
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+        except ImportError:
+            print("[PDF] Brak biblioteki reportlab (pip install reportlab) - pomijam PDF.")
+            return None
+
+        # Rejestracja fontu z polskimi znakami
+        font_name = "DejaVuSans"
+        font_path = CONFIG.get("pdf_font_path", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+        try:
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+        except Exception as e:
+            print(f"[PDF] Nie udało się zarejestrować fontu '{font_path}': {e}")
+            # Fallback - będzie bez ogonków, ale nie rozwalaj programu
+            font_name = "Helvetica"
+
+        reports_dir = CONFIG.get("deny_reports_dir") or CONFIG.get("logs_dir") or "logs"
+        try:
+            os.makedirs(reports_dir, exist_ok=True)
+        except Exception as e:
+            print(f"[PDF] Nie mogę utworzyć katalogu na raporty: {e}")
+            return None
+
+        safe_ts = ts.replace(":", "-").replace(" ", "_")
+        filename = f"deny_{safe_ts}_{emp_id or 'unknown'}.pdf"
+        pdf_path = os.path.join(reports_dir, filename)
+
+        try:
+            c = canvas.Canvas(pdf_path, pagesize=A4)
+            width, height = A4
+
+            # Tekst u góry strony
+            text = c.beginText(40, height - 40)
+            text.setFont(font_name, 14)
+            text.textLine("Odmowa wejścia na obiekt - raport")
+            text.moveCursor(0, 20)
+            text.setFont(font_name, 11)
+            text.textLine(f"Data i czas: {ts}")
+            text.textLine(f"Pracownik: {emp_name} (ID: {emp_id})")
+            text.textLine(f"Wynik pomiaru: {promille:.3f} [‰]")
+            c.drawText(text)
+
+            # Zdjęcie z kamery – jeżeli dostępne
+            if frame_bgr is not None:
+                try:
+                    # NIE konwertujemy na RGB – imencode oczekuje BGR i zapisze poprawnie kolorowy JPEG
+                    ok, buf = cv2.imencode(".jpg", frame_bgr)
+                    if ok:
+                        img_bytes = io.BytesIO(buf.tobytes())
+                        img = ImageReader(img_bytes)
+                        img_w, img_h = img.getSize()
+
+                        # Maksymalny obszar na zdjęcie (zostawiamy miejsce na tekst)
+                        max_w = width - 80          # marginesy boczne po 40
+                        max_h = height - 200        # trochę miejsca na górny tekst
+
+                        scale = min(max_w / img_w, max_h / img_h, 1.0)
+                        img_draw_w = img_w * scale
+                        img_draw_h = img_h * scale
+
+                        # Wycentrowanie na stronie (horyzontalnie) i w miarę po środku pionowo
+                        x = (width - img_draw_w) / 2.0
+                        y = max(40, (height - img_draw_h) / 2.0 - 20)
+
+                        c.drawImage(
+                            img,
+                            x,
+                            y,
+                            width=img_draw_w,
+                            height=img_draw_h,
+                            preserveAspectRatio=True,
+                            mask=None,  # bez automatycznej maski, żeby nic nie „wycinało” kolorów
+                        )
+                except Exception as e:
+                    print(f"[PDF] Błąd osadzania zdjęcia w PDF: {e}")
+
+            c.showPage()
+            c.save()
+            print(f"[PDF] Zapisano raport odmowy do {pdf_path}")
+            return pdf_path
+        except Exception as e:
+            print(f"[PDF] Błąd generowania PDF: {e}")
+            return None
+
+
 
     # ----- sterowanie diodami LED -----
     def trigger_led(self, pass_ok: bool):
@@ -1158,11 +1355,11 @@ class MainWindow(QtWidgets.QMainWindow):
             raw = self.adc.read_channel(self.distance_channel)
             # Zakładamy, że napięcie odniesienia wynosi 3.3 V
             voltage = (raw / 1023.0) * 3.3
-            # Wzór przybliżony z dokumentacji czujnika GP2Y0A21 (dla zakresu 10–80 cm)
+            # Wzór przybliżony z dokumentacji czujnika GP2Y0A21 (dla zakresu 10-80 cm)
             if voltage - 0.42 <= 0:
                 return float("inf")
             distance = 27.86 / (voltage - 0.42)
-            # Ogranicz zakres do 0–80 cm
+            # Ogranicz zakres do 0-80 cm
             if distance < 0 or distance > 80:
                 return float("inf")
             return distance
@@ -1173,7 +1370,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         Zwróć (amplituda, średnia) z kilku szybkich próbek z kanału mikrofonu.
 
-        amplituda = max - min – prosta miara „głośności” sygnału.
+        amplituda = max - min - prosta miara „głośności” sygnału.
         """
         try:
             n = max(1, int(samples))
@@ -1191,7 +1388,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # ----- obsługa przycisku Gość -----
     def on_btn_guest(self):
         """
-        Tryb Gość – pełny pomiar (odległość + dmuchanie),
+        Tryb Gość - pełny pomiar (odległość + dmuchanie),
         ale bez logowania wyników do CSV/Mongo.
         """
         # Ustaw dane gościa
@@ -1199,7 +1396,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.current_emp_id = "<guest>"
         self.current_emp_name = "Gość"
 
-        # Gość nie wymaga rozpoznanej twarzy – traktujemy jak fallback
+        # Gość nie wymaga rozpoznanej twarzy - traktujemy jak fallback
         # (on_identified_tick pozwoli wejść w pomiar bez kalibracji twarzy)
         self.fallback_pin_flag = True
 
@@ -1260,6 +1457,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.last_face_bbox = bbox
         self.last_confidence = conf or 0.0
+        if bbox is not None and self.state in ("DETECT", "DETECT_RETRY", "IDENTIFIED_WAIT"):
+            try:
+                self.last_detect_frame_bgr = self.frame_last_bgr.copy()
+            except Exception:
+                pass
+
 
         if self.state == "IDLE":
             if bbox is not None:
